@@ -438,55 +438,37 @@ def init_database():
         VALUES ('admin', ?, ?, 'admin', 'Super Admin', 1, ?)
         """, (admin_pwd, admin_hash, now_str))
 
-    # (b) Enforce Teacher Accounts
+    # (b) Pre-seed Default Teacher Accounts (INSERT OR IGNORE preserves custom passwords)
     t1_hash = hash_password("teacher123")
-    # teacher (Lead Teacher)
-    c.execute("SELECT id, password FROM users WHERE username = 'teacher'")
-    t_row = c.fetchone()
-    if not t_row:
-        c.execute("""
-        INSERT INTO users (username, password, password_hash, role, full_name, is_active, created_at)
-        VALUES ('teacher', 'teacher123', ?, 'teacher', 'Lead Teacher', 1, ?)
-        """, (t1_hash, now_str))
-    elif not t_row['password']:
-        c.execute("UPDATE users SET password = 'teacher123' WHERE username = 'teacher'")
-
-    # teacher1 (Teacher 1)
-    c.execute("SELECT id, password FROM users WHERE username = 'teacher1'")
-    t1_row = c.fetchone()
-    if not t1_row:
-        c.execute("""
-        INSERT INTO users (username, password, password_hash, role, full_name, is_active, created_at)
-        VALUES ('teacher1', 'teacher123', ?, 'teacher', 'Teacher 1', 1, ?)
-        """, (t1_hash, now_str))
-    elif not t1_row['password']:
-        c.execute("UPDATE users SET password = 'teacher123' WHERE username = 'teacher1'")
-
-    # teacher2 (Teacher 2)
     t2_hash = hash_password("teacher456")
-    c.execute("SELECT id, password FROM users WHERE username = 'teacher2'")
-    t2_row = c.fetchone()
-    if not t2_row:
-        c.execute("""
-        INSERT INTO users (username, password, password_hash, role, full_name, is_active, created_at)
-        VALUES ('teacher2', 'teacher456', ?, 'teacher', 'Teacher 2', 1, ?)
-        """, (t2_hash, now_str))
-    elif not t2_row['password']:
-        c.execute("UPDATE users SET password = 'teacher456' WHERE username = 'teacher2'")
 
-    # (c) Enforce 10 Student Accounts (student1 to student10)
+    c.execute("""
+    INSERT OR IGNORE INTO users (username, password, password_hash, role, full_name, is_active, created_at)
+    VALUES ('teacher', 'teacher123', ?, 'teacher', 'Lead Teacher', 1, ?)
+    """, (t1_hash, now_str))
+
+    c.execute("""
+    INSERT OR IGNORE INTO users (username, password, password_hash, role, full_name, is_active, created_at)
+    VALUES ('teacher1', 'teacher123', ?, 'teacher', 'Teacher 1', 1, ?)
+    """, (t1_hash, now_str))
+
+    c.execute("""
+    INSERT OR IGNORE INTO users (username, password, password_hash, role, full_name, is_active, created_at)
+    VALUES ('teacher2', 'teacher456', ?, 'teacher', 'Teacher 2', 1, ?)
+    """, (t2_hash, now_str))
+
+    c.execute("UPDATE users SET password = 'teacher123' WHERE username IN ('teacher', 'teacher1') AND (password IS NULL OR password = '')")
+    c.execute("UPDATE users SET password = 'teacher456' WHERE username = 'teacher2' AND (password IS NULL OR password = '')")
+
+    # (c) Pre-seed 10 Default Student Accounts (INSERT OR IGNORE preserves custom passwords)
     st_pwd_hash = hash_password("pass123")
     for i in range(1, 11):
         u_name = f"student{i}"
-        c.execute("SELECT id, password FROM users WHERE username = ?", (u_name,))
-        s_row = c.fetchone()
-        if not s_row:
-            c.execute("""
-            INSERT INTO users (username, password, password_hash, role, full_name, is_active, created_at)
-            VALUES (?, 'pass123', ?, 'student', ?, 1, ?)
-            """, (u_name, st_pwd_hash, f"Student {i}", now_str))
-        elif not s_row['password']:
-            c.execute("UPDATE users SET password = 'pass123' WHERE username = ?", (u_name,))
+        c.execute("""
+        INSERT OR IGNORE INTO users (username, password, password_hash, role, full_name, is_active, created_at)
+        VALUES (?, 'pass123', ?, 'student', ?, 1, ?)
+        """, (u_name, st_pwd_hash, f"Student {i}", now_str))
+        c.execute("UPDATE users SET password = 'pass123' WHERE username = ? AND (password IS NULL OR password = '')", (u_name,))
 
     # Seed initial announcement if empty
     c.execute("SELECT COUNT(*) as cnt FROM announcements")
@@ -2692,6 +2674,58 @@ def main():
 
 
         st.markdown("---")
+
+        # Self-Service Password Change for Teachers, Students & Admins
+        with st.sidebar.expander("🔑 Change My Password"):
+            with st.form("change_own_password_form", clear_on_submit=True):
+                current_pwd = st.text_input("Current Password", type="password")
+                new_pwd = st.text_input("New Password", type="password")
+                confirm_pwd = st.text_input("Confirm New Password", type="password")
+                btn_up_pwd = st.form_submit_button("Update Password", type="primary", use_container_width=True)
+
+                if btn_up_pwd:
+                    if not current_pwd or not new_pwd or not confirm_pwd:
+                        st.error("All fields are required.")
+                    elif len(new_pwd) < 4:
+                        st.error("New password must be at least 4 characters long.")
+                    elif new_pwd != confirm_pwd:
+                        st.error("New password and confirm password do not match.")
+                    else:
+                        try:
+                            with get_db_connection() as conn_chk:
+                                c_chk = conn_chk.cursor()
+                                c_chk.execute("SELECT password, password_hash FROM users WHERE username = ?", (st.session_state.username,))
+                                u_row = c_chk.fetchone()
+
+                            if not u_row:
+                                st.error("User record not found.")
+                            else:
+                                raw_p = u_row['password'] if 'password' in u_row.keys() else ''
+                                h_p = u_row['password_hash']
+                                curr_h = hash_password(current_pwd)
+
+                                is_match = (raw_p and current_pwd == raw_p) or (curr_h == h_p)
+                                if not is_match:
+                                    st.error("Incorrect current password.")
+                                else:
+                                    new_h = hash_password(new_pwd)
+                                    with get_db_connection() as conn_w:
+                                        conn_w.execute("""
+                                        UPDATE users SET password = ?, password_hash = ? WHERE username = ?
+                                        """, (new_pwd, new_h, st.session_state.username))
+                                        conn_w.commit()
+
+                                    if is_supabase_active():
+                                        supabase_request("PATCH", "users", {
+                                            "password": new_pwd,
+                                            "password_hash": new_h
+                                        }, params=f"username=eq.{st.session_state.username}")
+
+                                    st.success("✅ Password updated successfully!")
+                        except Exception as e:
+                            st.error(f"Error updating password: {e}")
+
+        st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
         with st.form("logout_form"):
             if st.form_submit_button("🚪 Sign Out", use_container_width=True):
                 st.session_state.logged_in = False
