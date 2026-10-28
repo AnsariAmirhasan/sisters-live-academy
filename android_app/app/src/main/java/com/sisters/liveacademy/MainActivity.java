@@ -29,7 +29,6 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -41,10 +40,12 @@ public class MainActivity extends AppCompatActivity {
 
     private WebView webView;
     private ProgressBar progressBar;
-    private SwipeRefreshLayout swipeRefreshLayout;
 
     private ValueCallback<Uri[]> uploadMessage;
     private long lastBackPressTime = 0;
+
+    // Tracks if we've already done the initial page load
+    private boolean initialLoadDone = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -53,7 +54,6 @@ public class MainActivity extends AppCompatActivity {
 
         webView = findViewById(R.id.webView);
         progressBar = findViewById(R.id.progressBar);
-        swipeRefreshLayout = findViewById(R.id.swipeRefreshLayout);
 
         // 1. Request Android Runtime Permissions for Camera, Mic, Audio & Storage
         checkAndRequestRuntimePermissions();
@@ -61,16 +61,29 @@ public class MainActivity extends AppCompatActivity {
         // 2. Configure WebView Settings
         configureWebView();
 
-        // 3. Configure Swipe Refresh
-        swipeRefreshLayout.setColorSchemeResources(R.color.primary, R.color.accent);
-        swipeRefreshLayout.setOnRefreshListener(() -> webView.reload());
-
-        // 4. Load the Application URL
-        String targetUrl = getString(R.string.app_url);
-        if (getIntent() != null && getIntent().getData() != null) {
-            targetUrl = getIntent().getData().toString();
+        // 3. Load the Application URL ONLY on fresh start (not on orientation change)
+        //    This prevents session loss on device rotation.
+        if (savedInstanceState == null) {
+            String targetUrl = getString(R.string.app_url);
+            if (getIntent() != null && getIntent().getData() != null) {
+                targetUrl = getIntent().getData().toString();
+            }
+            webView.loadUrl(targetUrl);
         }
-        webView.loadUrl(targetUrl);
+    }
+
+    @Override
+    protected void onSaveInstanceState(@NonNull Bundle outState) {
+        super.onSaveInstanceState(outState);
+        // Save WebView state (scroll position, current URL, history)
+        webView.saveState(outState);
+    }
+
+    @Override
+    protected void onRestoreInstanceState(@NonNull Bundle savedInstanceState) {
+        super.onRestoreInstanceState(savedInstanceState);
+        // Restore WebView state — prevents reload on orientation change
+        webView.restoreState(savedInstanceState);
     }
 
     private void checkAndRequestRuntimePermissions() {
@@ -129,13 +142,14 @@ public class MainActivity extends AppCompatActivity {
         settings.setBuiltInZoomControls(true);
         settings.setDisplayZoomControls(false);
 
-        // Cookies
+        // IMPORTANT: Use LOAD_DEFAULT so cached pages (login sessions) are reused
+        // This avoids unnecessary page reloads that log the user out
+        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+
+        // Cookies — persist across sessions (CRITICAL to keep login alive)
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
         cookieManager.setAcceptThirdPartyCookies(webView, true);
-
-        // Cache mode
-        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
 
         // Setup File Downloads (recordings, notes, fee receipts)
         webView.setDownloadListener(new DownloadListener() {
@@ -162,7 +176,7 @@ public class MainActivity extends AppCompatActivity {
         public void onPermissionRequest(final PermissionRequest request) {
             runOnUiThread(() -> {
                 try {
-                    // Grant requested WebRTC resources (audio, video, protected media)
+                    // Grant all requested WebRTC resources (audio, video, protected media)
                     request.grant(request.getResources());
                 } catch (Exception e) {
                     e.printStackTrace();
@@ -182,7 +196,6 @@ public class MainActivity extends AppCompatActivity {
                 progressBar.setProgress(newProgress);
             } else {
                 progressBar.setVisibility(View.GONE);
-                swipeRefreshLayout.setRefreshing(false);
             }
         }
 
@@ -257,7 +270,8 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onPageFinished(WebView view, String url) {
             progressBar.setVisibility(View.GONE);
-            swipeRefreshLayout.setRefreshing(false);
+            // Flush cookies to disk immediately after every page load
+            CookieManager.getInstance().flush();
         }
     }
 
@@ -331,5 +345,12 @@ public class MainActivity extends AppCompatActivity {
                 lastBackPressTime = System.currentTimeMillis();
             }
         }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // Flush all cookies to disk when app goes to background
+        CookieManager.getInstance().flush();
     }
 }
