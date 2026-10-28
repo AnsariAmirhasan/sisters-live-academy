@@ -11,6 +11,7 @@ import os
 import re
 import datetime
 import urllib.parse
+import urllib.request
 import io
 import csv
 import ssl
@@ -26,6 +27,25 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ==========================================
+# GOOGLE DRIVE CONFIGURATION
+# ==========================================
+DEFAULT_DRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/10g6bnUyJJXVA_ABy2xZtL_FxUfUB7Uzb?usp=sharing"
+
+def get_drive_folder_id(url: str = DEFAULT_DRIVE_FOLDER_URL) -> str:
+    """Extracts folder ID from Google Drive folder URL using regex"""
+    if not url:
+        return "10g6bnUyJJXVA_ABy2xZtL_FxUfUB7Uzb"
+    match = re.search(r'folders/([a-zA-Z0-9_-]+)', url)
+    if match:
+        return match.group(1)
+    param_match = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', url)
+    if param_match:
+        return param_match.group(1)
+    return "10g6bnUyJJXVA_ABy2xZtL_FxUfUB7Uzb"
+
+DEFAULT_DRIVE_FOLDER_ID = get_drive_folder_id(DEFAULT_DRIVE_FOLDER_URL)
 
 # ==========================================
 # 2. SAFE SESSION STATE INITIALIZATION
@@ -144,7 +164,100 @@ def process_google_drive_link(raw_link: str) -> tuple[str, str]:
         embed_url = f"https://www.youtube.com/embed/{vid_id}"
         return embed_url, raw_link
 
+    folder_match = re.search(r'folders/([a-zA-Z0-9_-]+)', raw_link)
+    if folder_match:
+        f_id = folder_match.group(1)
+        return f"https://drive.google.com/embeddedfolderview?id={f_id}#grid", raw_link
+
     return raw_link, raw_link
+
+def upload_file_to_google_drive(file_obj, filename: str, folder_id: str = DEFAULT_DRIVE_FOLDER_ID) -> tuple[bool, str, str]:
+    """
+    Uploads a video directly to Google Drive folder using service account credentials if configured.
+    Returns (success: bool, web_view_link: str, error_message: str).
+    """
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseUpload
+
+        sa_info = None
+        if "gcp_service_account" in st.secrets:
+            sa_info = dict(st.secrets["gcp_service_account"])
+        elif "google_drive" in st.secrets and "service_account" in st.secrets["google_drive"]:
+            sa_info = dict(st.secrets["google_drive"]["service_account"])
+        elif "service_account" in st.secrets:
+            sa_info = dict(st.secrets["service_account"])
+
+        if not sa_info:
+            return False, "", "Google Cloud Service Account credentials ('gcp_service_account') not found in st.secrets."
+
+        creds = service_account.Credentials.from_service_account_info(
+            sa_info,
+            scopes=['https://www.googleapis.com/auth/drive']
+        )
+        service = build('drive', 'v3', credentials=creds)
+
+        file_metadata = {
+            'name': filename,
+            'parents': [folder_id]
+        }
+        file_obj.seek(0)
+        media = MediaIoBaseUpload(file_obj, mimetype='video/webm', resumable=True)
+        uploaded = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, webViewLink'
+        ).execute()
+
+        file_id = uploaded.get('id')
+        web_link = uploaded.get('webViewLink') or f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
+
+        try:
+            service.permissions().create(
+                fileId=file_id,
+                body={'type': 'anyone', 'role': 'reader'}
+            ).execute()
+        except Exception:
+            pass
+
+        return True, web_link, ""
+    except ImportError:
+        return False, "", "The 'google-api-python-client' or 'google-auth' package is not installed."
+    except Exception as e:
+        return False, "", str(e)
+
+def render_embedded_drive_folder(folder_id: str = DEFAULT_DRIVE_FOLDER_ID, folder_url: str = DEFAULT_DRIVE_FOLDER_URL, title: str = "Class Recordings Cloud Folder", key_suffix: str = "main"):
+    """
+    Renders an embedded, real-time Google Drive folder viewer inside Streamlit.
+    Any video uploaded to this folder automatically appears here for all students & teacher.
+    """
+    st.markdown(f"""
+    <div style="background: linear-gradient(135deg, #f0fdf4 0%, #eff6ff 100%); border: 1px solid #bbf7d0; border-radius: 12px; padding: 14px 18px; margin-bottom: 12px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+            <div>
+                <h4 style="margin: 0; color: #166534; display: flex; align-items: center; gap: 8px;">
+                    <span>📁</span> <span>{title}</span>
+                    <span style="font-size: 0.72rem; background: #16a34a; color: white; padding: 2px 8px; border-radius: 9999px; font-weight: 700; letter-spacing: 0.5px;">LIVE AUTO-SYNC</span>
+                </h4>
+                <p style="margin: 4px 0 0 0; color: #374151; font-size: 0.88rem;">
+                    Every lecture video dropped into this Google Drive folder updates automatically below in real time for all students.
+                </p>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_v1, col_v2 = st.columns([2.5, 1])
+    with col_v1:
+        view_mode = st.radio("Display Mode:", ["Grid View", "List View"], horizontal=True, key=f"drive_view_mode_{key_suffix}")
+    with col_v2:
+        st.link_button("↗️ Open Folder in Google Drive", folder_url, use_container_width=True)
+
+    layout_suffix = "#grid" if view_mode == "Grid View" else "#list"
+    embed_url = f"https://drive.google.com/embeddedfolderview?id={folder_id}{layout_suffix}"
+
+    components.iframe(embed_url, height=450, scrolling=True)
 
 def init_database():
     """Initializes SQLite schema and ensures columns exist"""
@@ -911,7 +1024,7 @@ def render_teacher_dashboard():
                         st.rerun()
 
         with col_st3:
-            st.link_button("📂 Open My Google Drive", "https://drive.google.com/drive/my-drive", use_container_width=True)
+            st.link_button("📂 Open Class Recordings Drive Folder (Upload Here)", DEFAULT_DRIVE_FOLDER_URL, use_container_width=True)
 
         st.markdown("---")
 
@@ -932,7 +1045,70 @@ def render_teacher_dashboard():
     # ---------------------------------------------
     with tab_recordings:
         st.subheader("Google Drive Recorded Classes & Study Library")
-        st.caption("Paste any Google Drive or YouTube sharing link. It is automatically converted into an embedded player and direct download button for students.")
+        st.caption("All class recordings dropped into your Google Drive folder automatically appear below for you and all students in real time.")
+
+        # Embedded Google Drive Folder Viewer: real-time auto-sync
+        render_embedded_drive_folder(
+            folder_id=DEFAULT_DRIVE_FOLDER_ID,
+            folder_url=DEFAULT_DRIVE_FOLDER_URL,
+            title="Class Recordings Google Drive Folder",
+            key_suffix="teacher"
+        )
+        st.markdown("---")
+
+        # Quick Actions & Direct Auto-Uploader
+        col_up_btn1, col_up_btn2 = st.columns([1.5, 1])
+        with col_up_btn1:
+            st.link_button("📂 Open Class Recordings Drive Folder (Upload Here)", DEFAULT_DRIVE_FOLDER_URL, type="primary", use_container_width=True)
+            st.caption("Click to open the Google Drive folder in a new tab and drop your downloaded recording files directly.")
+        with col_up_btn2:
+            st.info(f"📁 Folder ID: `{DEFAULT_DRIVE_FOLDER_ID}`")
+
+        with st.expander("☁️ Direct Google Drive Video Auto-Uploader (Service Account)", expanded=False):
+            st.write("Upload a recorded `.webm`, `.mp4`, or `.mkv` file directly into your Google Drive folder from here:")
+            uploaded_file = st.file_uploader("Upload Recording Directly to Google Drive Folder", type=["webm", "mp4", "mkv"], key="teacher_drive_uploader")
+            if uploaded_file is not None:
+                up_col1, up_col2 = st.columns([1.5, 1])
+                with up_col1:
+                    up_title = st.text_input("Recording Title", value=uploaded_file.name.rsplit(".", 1)[0], key="auto_up_title")
+                with up_col2:
+                    up_sub = st.selectbox("Subject", ["Mathematics", "Physics", "Chemistry", "Biology", "English", "General Coaching"], key="auto_up_sub")
+
+                if st.button("🚀 Upload File to Google Drive Folder", type="primary", use_container_width=True, key="btn_auto_up"):
+                    with st.spinner("Uploading video to Google Drive folder..."):
+                        ok, web_link, err_msg = upload_file_to_google_drive(uploaded_file, uploaded_file.name, DEFAULT_DRIVE_FOLDER_ID)
+                        if ok:
+                            embed_url, download_url = process_google_drive_link(web_link)
+                            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            today_str = str(datetime.date.today())
+                            try:
+                                with get_db_connection() as conn_w:
+                                    conn_w.execute("""
+                                    INSERT INTO recordings (title, subject, lecture_date, description, drive_link, embed_url, download_url, created_at)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                    """, (up_title, up_sub, today_str, f"Auto-uploaded: {uploaded_file.name}", web_link, embed_url, download_url, now_str))
+                                    conn_w.commit()
+                            except Exception as e:
+                                print(f"Error saving auto-uploaded recording: {e}")
+
+                            if is_supabase_active():
+                                supabase_request("POST", "recordings", {
+                                    "title": up_title, "subject": up_sub, "lecture_date": today_str,
+                                    "description": f"Auto-uploaded: {uploaded_file.name}", "drive_link": web_link,
+                                    "embed_url": embed_url, "download_url": download_url, "created_at": now_str
+                                })
+
+                            st.success(f"Video uploaded to Google Drive! Link: {web_link}")
+                            st.rerun()
+                        else:
+                            st.warning(f"Notice: {err_msg}")
+                            st.markdown(f"""
+                            💡 **Quick Alternative:** Click **[📂 Open Class Recordings Drive Folder (Upload Here)]({DEFAULT_DRIVE_FOLDER_URL})** to drag & drop your video directly into the folder. Once uploaded, it instantly appears in the embedded viewer above!
+                            """)
+
+        st.markdown("---")
+        st.markdown("#### 🎬 Spotlight Individual Video Player")
+        st.caption("You can also add an individual Google Drive or YouTube sharing link below to highlight specific lessons in the student player.")
 
         col_r1, col_r2 = st.columns([1.2, 1.8])
 
@@ -1515,6 +1691,16 @@ def render_student_dashboard():
     # ---------------------------------------------
     with tab_library:
         st.subheader("📚 Study Library & Recorded Classes")
+
+        # Embedded Google Drive Folder Viewer: real-time auto-sync for all students
+        render_embedded_drive_folder(
+            folder_id=DEFAULT_DRIVE_FOLDER_ID,
+            folder_url=DEFAULT_DRIVE_FOLDER_URL,
+            title="📚 Class Recordings & Notes Google Drive Folder",
+            key_suffix="student"
+        )
+        st.markdown("---")
+        st.markdown("#### 🔍 Spotlight Lectures & In-App Player")
 
         col_s1, col_s2 = st.columns([2, 1])
         with col_s1:
