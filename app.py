@@ -42,21 +42,33 @@ if "jitsi_server" not in st.session_state:
     st.session_state.jitsi_server = "jitsi.riot.im"
 if "live_joined" not in st.session_state:
     st.session_state.live_joined = False
+if "joined_live_class" not in st.session_state:
+    st.session_state.joined_live_class = False
 
 # ==========================================
 # 3. HYBRID DATABASE ENGINE (SQLITE & SUPABASE)
 # ==========================================
 DB_FILE = "classroom.db"
 
-@st.cache_resource
-def get_db():
+def get_db_connection():
     """
-    Returns single persistent thread-safe SQLite connection.
-    Cached globally so user actions are written immediately.
+    Opens a fresh, short-lived SQLite connection with 30s timeout and WAL journal mode.
+    Allows concurrent reads and writes from multiple users (Teacher + Students)
+    without database locking conflicts.
     """
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn = sqlite3.connect(DB_FILE, timeout=30.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout = 30000;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+    except Exception:
+        pass
     return conn
+
+# Compatibility alias
+get_db = get_db_connection
+
 
 def hash_password(password: str, salt: str = "sister_academy_salt_2026") -> str:
     """Standard SHA-256 password hashing with salt"""
@@ -210,6 +222,26 @@ def init_database():
     )
     """)
 
+    # Safe column migration for attendance table
+    try:
+        c.execute("PRAGMA table_info(attendance)")
+        att_cols = [r[1] for r in c.fetchall()]
+        if 'student_username' not in att_cols:
+            c.execute("ALTER TABLE attendance ADD COLUMN student_username TEXT DEFAULT ''")
+        if 'student_name' not in att_cols:
+            c.execute("ALTER TABLE attendance ADD COLUMN student_name TEXT DEFAULT ''")
+        if 'room_name' not in att_cols:
+            c.execute("ALTER TABLE attendance ADD COLUMN room_name TEXT DEFAULT ''")
+        if 'topic' not in att_cols:
+            c.execute("ALTER TABLE attendance ADD COLUMN topic TEXT DEFAULT ''")
+        if 'join_timestamp' not in att_cols:
+            c.execute("ALTER TABLE attendance ADD COLUMN join_timestamp TEXT DEFAULT ''")
+        if 'date' not in att_cols:
+            c.execute("ALTER TABLE attendance ADD COLUMN date TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        pass
+
     # 4. Recordings
     c.execute("""
     CREATE TABLE IF NOT EXISTS recordings (
@@ -286,9 +318,14 @@ def init_database():
         """, (demo_drive_url, embed_url, dl_url, now_str))
 
     conn.commit()
+    conn.close()
+
+# Compatibility alias
+init_db = init_database
 
 # Run DB initialization once
 init_database()
+
 
 # ==========================================
 # 4. CUSTOM CSS (MODERN EDTECH STYLING)
@@ -690,12 +727,16 @@ def handle_login(username_val: str, password_val: str):
 
     # Fallback to local SQLite
     if not user:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT * FROM users WHERE username = ? AND password_hash = ?", (username_val.strip().lower(), pwd_hash))
-        raw_u = c.fetchone()
-        if raw_u:
-            user = dict(raw_u)
+        conn = get_db_connection()
+        try:
+            c = conn.cursor()
+            c.execute("SELECT * FROM users WHERE username = ? AND password_hash = ?", (username_val.strip().lower(), pwd_hash))
+            raw_u = c.fetchone()
+            if raw_u:
+                user = dict(raw_u)
+        finally:
+            conn.close()
+
 
     if user:
         if user.get('is_active', 1) == 0:
@@ -831,12 +872,16 @@ def render_teacher_dashboard():
 
                     if btn_start:
                         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        c.execute("""
-                        UPDATE class_session 
-                        SET is_live = 1, topic = ?, room_name = ?, server = ?, teacher_notes = ?, started_at = ?
-                        WHERE id = 1
-                        """, (f_topic, f_room, f_server, f_notes, now_str))
-                        conn.commit()
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("""
+                                UPDATE class_session 
+                                SET is_live = 1, topic = ?, room_name = ?, server = ?, teacher_notes = ?, started_at = ?
+                                WHERE id = 1
+                                """, (f_topic, f_room, f_server, f_notes, now_str))
+                                conn_w.commit()
+                        except Exception as e:
+                            print(f"Error starting live class: {e}")
 
                         if is_supabase_active():
                             supabase_request("PATCH", "class_session", {
@@ -852,8 +897,12 @@ def render_teacher_dashboard():
                     btn_stop = st.form_submit_button("🛑 End Live Class for All", type="primary", use_container_width=True)
                     if btn_stop:
                         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        c.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
-                        conn.commit()
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
+                                conn_w.commit()
+                        except Exception as e:
+                            print(f"Error ending live class: {e}")
 
                         if is_supabase_active():
                             supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
@@ -903,11 +952,15 @@ def render_teacher_dashboard():
                     else:
                         embed_url, download_url = process_google_drive_link(r_link)
                         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        c.execute("""
-                        INSERT INTO recordings (title, subject, lecture_date, description, drive_link, embed_url, download_url, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (r_title, r_subject, str(r_date), r_desc, r_link, embed_url, download_url, now_str))
-                        conn.commit()
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("""
+                                INSERT INTO recordings (title, subject, lecture_date, description, drive_link, embed_url, download_url, created_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                """, (r_title, r_subject, str(r_date), r_desc, r_link, embed_url, download_url, now_str))
+                                conn_w.commit()
+                        except Exception as e:
+                            print(f"Error publishing recording: {e}")
 
                         if is_supabase_active():
                             supabase_request("POST", "recordings", {
@@ -944,8 +997,12 @@ def render_teacher_dashboard():
                         with col_l2:
                             with st.form(f"del_rec_form_{rec['id']}"):
                                 if st.form_submit_button("🗑️ Delete Recording", use_container_width=True):
-                                    c.execute("DELETE FROM recordings WHERE id = ?", (rec['id'],))
-                                    conn.commit()
+                                    try:
+                                        with get_db_connection() as conn_w:
+                                            conn_w.execute("DELETE FROM recordings WHERE id = ?", (rec['id'],))
+                                            conn_w.commit()
+                                    except Exception as e:
+                                        print(f"Error deleting recording: {e}")
                                     if is_supabase_active():
                                         supabase_request("DELETE", "recordings", params=f"id=eq.{rec['id']}")
                                     st.success("Deleted recording.")
@@ -977,11 +1034,15 @@ def render_teacher_dashboard():
                         st.error("Title and message are required.")
                     else:
                         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        c.execute("""
-                        INSERT INTO announcements (title, message, priority, created_at)
-                        VALUES (?, ?, ?, ?)
-                        """, (n_title, n_msg, n_priority, now_str))
-                        conn.commit()
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("""
+                                INSERT INTO announcements (title, message, priority, created_at)
+                                VALUES (?, ?, ?, ?)
+                                """, (n_title, n_msg, n_priority, now_str))
+                                conn_w.commit()
+                        except Exception as e:
+                            print(f"Error publishing announcement: {e}")
 
                         if is_supabase_active():
                             supabase_request("POST", "announcements", {
@@ -1025,8 +1086,12 @@ def render_teacher_dashboard():
 
                     with st.form(f"del_not_{n['id']}"):
                         if st.form_submit_button("Delete Notice", use_container_width=False):
-                            c.execute("DELETE FROM announcements WHERE id = ?", (n['id'],))
-                            conn.commit()
+                            try:
+                                with get_db_connection() as conn_w:
+                                    conn_w.execute("DELETE FROM announcements WHERE id = ?", (n['id'],))
+                                    conn_w.commit()
+                            except Exception as e:
+                                print(f"Error deleting announcement: {e}")
                             if is_supabase_active():
                                 supabase_request("DELETE", "announcements", params=f"id=eq.{n['id']}")
                             st.rerun()
@@ -1073,10 +1138,14 @@ def render_teacher_dashboard():
                         if sub_ans:
                             if reply_val.strip():
                                 now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                c.execute("""
-                                UPDATE doubts SET reply = ?, status = 'Answered', replied_at = ? WHERE id = ?
-                                """, (reply_val.strip(), now_str, d['id']))
-                                conn.commit()
+                                try:
+                                    with get_db_connection() as conn_w:
+                                        conn_w.execute("""
+                                        UPDATE doubts SET reply = ?, status = 'Answered', replied_at = ? WHERE id = ?
+                                        """, (reply_val.strip(), now_str, d['id']))
+                                        conn_w.commit()
+                                except Exception as e:
+                                    print(f"Error answering doubt: {e}")
                                 if is_supabase_active():
                                     supabase_request("PATCH", "doubts", {
                                         "reply": reply_val.strip(), "status": "Answered", "replied_at": now_str
@@ -1087,8 +1156,12 @@ def render_teacher_dashboard():
                                 st.error("Response cannot be empty.")
 
                         if del_doubt:
-                            c.execute("DELETE FROM doubts WHERE id = ?", (d['id'],))
-                            conn.commit()
+                            try:
+                                with get_db_connection() as conn_w:
+                                    conn_w.execute("DELETE FROM doubts WHERE id = ?", (d['id'],))
+                                    conn_w.commit()
+                            except Exception as e:
+                                print(f"Error deleting doubt: {e}")
                             if is_supabase_active():
                                 supabase_request("DELETE", "doubts", params=f"id=eq.{d['id']}")
                             st.warning("Doubt removed.")
@@ -1150,11 +1223,12 @@ def render_teacher_dashboard():
                             pw_h = hash_password(n_pw)
                             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             try:
-                                c.execute("""
-                                INSERT INTO users (username, password_hash, role, full_name, is_active, created_at)
-                                VALUES (?, ?, 'student', ?, 1, ?)
-                                """, (n_un, pw_h, n_fn, now_str))
-                                conn.commit()
+                                with get_db_connection() as conn_w:
+                                    conn_w.execute("""
+                                    INSERT INTO users (username, password_hash, role, full_name, is_active, created_at)
+                                    VALUES (?, ?, 'student', ?, 1, ?)
+                                    """, (n_un, pw_h, n_fn, now_str))
+                                    conn_w.commit()
 
                                 if is_supabase_active():
                                     supabase_request("POST", "users", {
@@ -1166,6 +1240,8 @@ def render_teacher_dashboard():
                                 st.rerun()
                             except sqlite3.IntegrityError:
                                 st.error(f"Username '{n_un}' is already taken.")
+                            except Exception as e:
+                                st.error(f"Error registering student: {e}")
 
             with col_u2:
                 st.markdown("#### 🔒 Student List & Access Controls")
@@ -1188,16 +1264,24 @@ def render_teacher_dashboard():
                             with st.form(f"blk_form_{s['id']}"):
                                 if s.get('is_active', 1) == 1:
                                     if st.form_submit_button("🚫 Block Student", use_container_width=True):
-                                        c.execute("UPDATE users SET is_active = 0 WHERE id = ?", (s['id'],))
-                                        conn.commit()
+                                        try:
+                                            with get_db_connection() as conn_w:
+                                                conn_w.execute("UPDATE users SET is_active = 0 WHERE id = ?", (s['id'],))
+                                                conn_w.commit()
+                                        except Exception as e:
+                                            print(f"Error blocking user: {e}")
                                         if is_supabase_active():
                                             supabase_request("PATCH", "users", {"is_active": 0}, params=f"id=eq.{s['id']}")
                                         st.warning(f"Blocked @{s['username']}.")
                                         st.rerun()
                                 else:
                                     if st.form_submit_button("✅ Unblock Student", use_container_width=True):
-                                        c.execute("UPDATE users SET is_active = 1 WHERE id = ?", (s['id'],))
-                                        conn.commit()
+                                        try:
+                                            with get_db_connection() as conn_w:
+                                                conn_w.execute("UPDATE users SET is_active = 1 WHERE id = ?", (s['id'],))
+                                                conn_w.commit()
+                                        except Exception as e:
+                                            print(f"Error unblocking user: {e}")
                                         if is_supabase_active():
                                             supabase_request("PATCH", "users", {"is_active": 1}, params=f"id=eq.{s['id']}")
                                         st.success(f"Unblocked @{s['username']}.")
@@ -1208,8 +1292,12 @@ def render_teacher_dashboard():
                                 new_p = st.text_input("New Password", value="pass123")
                                 if st.form_submit_button("🔑 Reset Pass", use_container_width=True):
                                     pwd_res = hash_password(new_p)
-                                    c.execute("UPDATE users SET password_hash = ? WHERE id = ?", (pwd_res, s['id']))
-                                    conn.commit()
+                                    try:
+                                        with get_db_connection() as conn_w:
+                                            conn_w.execute("UPDATE users SET password_hash = ? WHERE id = ?", (pwd_res, s['id']))
+                                            conn_w.commit()
+                                    except Exception as e:
+                                        print(f"Error resetting password: {e}")
                                     if is_supabase_active():
                                         supabase_request("PATCH", "users", {"password_hash": pwd_res}, params=f"id=eq.{s['id']}")
                                     st.success(f"Password reset for @{s['username']}.")
@@ -1218,8 +1306,12 @@ def render_teacher_dashboard():
                         with c_b3:
                             with st.form(f"del_st_form_{s['id']}"):
                                 if st.form_submit_button("🗑️ Delete Account", use_container_width=True):
-                                    c.execute("DELETE FROM users WHERE id = ?", (s['id'],))
-                                    conn.commit()
+                                    try:
+                                        with get_db_connection() as conn_w:
+                                            conn_w.execute("DELETE FROM users WHERE id = ?", (s['id'],))
+                                            conn_w.commit()
+                                    except Exception as e:
+                                        print(f"Error deleting user: {e}")
                                     if is_supabase_active():
                                         supabase_request("DELETE", "users", params=f"id=eq.{s['id']}")
                                     st.success("Student removed.")
@@ -1255,9 +1347,16 @@ def render_teacher_dashboard():
             st.code(sql_content, language="sql")
             st.info("Once you click RUN in Supabase, refresh this page. Cloud Storage will automatically turn GREEN!")
 
+    # Close connection cleanly
+    try:
+        conn.close()
+    except Exception:
+        pass
+
 
 # ==========================================
 # 8. STUDENT DASHBOARD
+
 # ==========================================
 def render_student_dashboard():
     conn = get_db()
@@ -1340,6 +1439,7 @@ def render_student_dashboard():
             </div>
             """, unsafe_allow_html=True)
             st.session_state.live_joined = False
+            st.session_state.joined_live_class = False
         else:
             st.markdown(f"""
             <div class="glass-card" style="border: 2px solid #f87171; background: #fff5f5;">
@@ -1352,23 +1452,29 @@ def render_student_dashboard():
             </div>
             """, unsafe_allow_html=True)
 
-            if not st.session_state.live_joined:
+            is_already_joined = st.session_state.get("live_joined", False) or st.session_state.get("joined_live_class", False)
+            if not is_already_joined:
                 col_j1, col_j2, col_j3 = st.columns([1, 2, 1])
                 with col_j2:
                     with st.form("join_live_form"):
                         btn_join = st.form_submit_button("🚀 Join Live Class Now (Logs Attendance)", type="primary", use_container_width=True)
                         if btn_join:
-                            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            today_str = str(datetime.date.today())
-                            c.execute("""
-                            SELECT id FROM attendance WHERE student_username = ? AND date = ? AND room_name = ?
-                            """, (st.session_state.username, today_str, room_name))
-                            if not c.fetchone():
-                                c.execute("""
-                                INSERT INTO attendance (student_username, student_name, room_name, topic, join_timestamp, date)
-                                VALUES (?, ?, ?, ?, ?, ?)
-                                """, (st.session_state.username, st.session_state.name, room_name, session_topic, now_str, today_str))
-                                conn.commit()
+                            # Fail-safe attendance logging: even if DB encounters locks/delays,
+                            # NEVER block the student from joining!
+                            try:
+                                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                today_str = str(datetime.date.today())
+                                with get_db_connection() as att_conn:
+                                    att_c = att_conn.cursor()
+                                    att_c.execute("""
+                                    SELECT id FROM attendance WHERE student_username = ? AND date = ? AND room_name = ?
+                                    """, (st.session_state.username, today_str, room_name))
+                                    if not att_c.fetchone():
+                                        att_c.execute("""
+                                        INSERT INTO attendance (student_username, student_name, room_name, topic, join_timestamp, date)
+                                        VALUES (?, ?, ?, ?, ?, ?)
+                                        """, (st.session_state.username, st.session_state.name, room_name, session_topic, now_str, today_str))
+                                        att_conn.commit()
 
                                 if is_supabase_active():
                                     supabase_request("POST", "attendance", {
@@ -1379,10 +1485,14 @@ def render_student_dashboard():
                                         "join_timestamp": now_str,
                                         "date": today_str
                                     })
+                            except Exception as att_err:
+                                print(f"Non-critical attendance log error: {att_err}")
 
                             st.session_state.live_joined = True
+                            st.session_state.joined_live_class = True
                             st.rerun()
             else:
+
                 st.success("✅ Attendance recorded! You are in the live room.")
 
                 # Active in-app classroom embed with fullscreen button (no external redirects)
@@ -1397,6 +1507,7 @@ def render_student_dashboard():
                 with st.form("leave_live_form"):
                     if st.form_submit_button("Leave Live Room"):
                         st.session_state.live_joined = False
+                        st.session_state.joined_live_class = False
                         st.rerun()
 
     # ---------------------------------------------
@@ -1485,11 +1596,15 @@ def render_student_dashboard():
                         st.error("Question cannot be empty.")
                     else:
                         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        c.execute("""
-                        INSERT INTO doubts (student_username, student_name, question, subject, created_at)
-                        VALUES (?, ?, ?, ?, ?)
-                        """, (st.session_state.username, st.session_state.name, d_q.strip(), d_sub, now_str))
-                        conn.commit()
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("""
+                                INSERT INTO doubts (student_username, student_name, question, subject, created_at)
+                                VALUES (?, ?, ?, ?, ?)
+                                """, (st.session_state.username, st.session_state.name, d_q.strip(), d_sub, now_str))
+                                conn_w.commit()
+                        except Exception as e:
+                            print(f"Error submitting doubt: {e}")
 
                         if is_supabase_active():
                             supabase_request("POST", "doubts", {
@@ -1563,9 +1678,16 @@ def render_student_dashboard():
             st.write(f"**Total Live Classes Attended:** {len(my_logs)}")
             st.dataframe(my_logs, use_container_width=True, hide_index=True)
 
+    # Close connection cleanly
+    try:
+        conn.close()
+    except Exception:
+        pass
+
 
 # ==========================================
 # 9. MAIN ROUTER & SIDEBAR
+
 # ==========================================
 def main():
     if not st.session_state.logged_in or not st.session_state.username:
@@ -1623,6 +1745,7 @@ def main():
                 st.session_state.role = None
                 st.session_state.name = None
                 st.session_state.live_joined = False
+                st.session_state.joined_live_class = False
                 st.rerun()
 
     if st.session_state.role == 'teacher':
