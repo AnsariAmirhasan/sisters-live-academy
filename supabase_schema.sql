@@ -8,6 +8,7 @@
 CREATE TABLE IF NOT EXISTS public.users (
     id BIGSERIAL PRIMARY KEY,
     username TEXT UNIQUE NOT NULL,
+    password TEXT DEFAULT '',
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL,
     full_name TEXT NOT NULL,
@@ -15,17 +16,24 @@ CREATE TABLE IF NOT EXISTS public.users (
     created_at TEXT NOT NULL
 );
 
+-- Safe migrations if table already exists
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS password TEXT DEFAULT '';
+
 -- 2. Class Session Table
 CREATE TABLE IF NOT EXISTS public.class_session (
     id BIGINT PRIMARY KEY,
     is_live INTEGER DEFAULT 0,
     topic TEXT DEFAULT 'General Coaching Session',
     room_name TEXT DEFAULT 'SistersClass_Room101',
-    server TEXT DEFAULT 'meet.ffmuc.net',
+    server TEXT DEFAULT 'jitsi.riot.im',
+    host_teacher TEXT DEFAULT 'Lead Teacher',
     started_at TEXT,
     ended_at TEXT,
     teacher_notes TEXT DEFAULT ''
 );
+
+-- Safe migration if column missing
+ALTER TABLE public.class_session ADD COLUMN IF NOT EXISTS host_teacher TEXT DEFAULT 'Lead Teacher';
 
 -- 3. Attendance Logs
 CREATE TABLE IF NOT EXISTS public.attendance (
@@ -74,32 +82,40 @@ CREATE TABLE IF NOT EXISTS public.doubts (
 );
 
 -- Insert Default Class Session Row
-INSERT INTO public.class_session (id, is_live, topic, room_name, server, teacher_notes)
-VALUES (1, 0, 'Mathematics & Science Live Coaching', 'SistersLiveClass_MasterRoom', 'meet.ffmuc.net', 'Welcome! Camera is OFF by default. Turn on mic when asked.')
-ON CONFLICT (id) DO NOTHING;
+INSERT INTO public.class_session (id, is_live, topic, room_name, server, host_teacher, teacher_notes)
+VALUES (1, 0, 'Mathematics & Science Live Coaching', 'SistersLiveClass_MasterRoom', 'jitsi.riot.im', 'Lead Teacher', 'Welcome! Camera is OFF by default. Turn on mic when asked.')
+ON CONFLICT (id) DO UPDATE SET server = EXCLUDED.server, host_teacher = EXCLUDED.host_teacher;
 
--- Seed Teacher Account (teacher / teacher123)
--- Hash for teacher123 with salt sister_academy_salt_2026:
--- 3a7b9fc286b2e1e94cb02ff0b6d91f24d7764d8527a2fb0e8cb554030616aef7
-INSERT INTO public.users (username, password_hash, role, full_name, is_active, created_at)
-VALUES ('teacher', '3a7b9fc286b2e1e94cb02ff0b6d91f24d7764d8527a2fb0e8cb554030616aef7', 'teacher', 'Prof. Academy Teacher', 1, NOW()::TEXT)
+-- Enforce Super Admin Account (admin / Amir@7861)
+-- Hash for Amir@7861 with salt sister_academy_salt_2026:
+-- 3b40097a858567ee7452601da42e3bfd5cb8ebc27599026da6e6aa5c602a831e
+INSERT INTO public.users (username, password, password_hash, role, full_name, is_active, created_at)
+VALUES ('admin', 'Amir@7861', '3b40097a858567ee7452601da42e3bfd5cb8ebc27599026da6e6aa5c602a831e', 'admin', 'Super Admin', 1, NOW()::TEXT)
+ON CONFLICT (username) DO UPDATE SET password = EXCLUDED.password, password_hash = EXCLUDED.password_hash, role = 'admin', full_name = 'Super Admin', is_active = 1;
+
+-- Seed Teacher Accounts
+INSERT INTO public.users (username, password, password_hash, role, full_name, is_active, created_at)
+VALUES 
+  ('teacher', 'teacher123', '3a7b9fc286b2e1e94cb02ff0b6d91f24d7764d8527a2fb0e8cb554030616aef7', 'teacher', 'Lead Teacher', 1, NOW()::TEXT),
+  ('teacher1', 'teacher123', '3a7b9fc286b2e1e94cb02ff0b6d91f24d7764d8527a2fb0e8cb554030616aef7', 'teacher', 'Teacher 1', 1, NOW()::TEXT),
+  ('teacher2', 'teacher456', '8ca9489ce47dfb2a472c6cf67f673f4eec9d8161726a41f6ca19ebc5740fcbca', 'teacher', 'Teacher 2', 1, NOW()::TEXT)
 ON CONFLICT (username) DO NOTHING;
 
 -- Seed 10 Default Student Accounts (student1 to student10 / pass123)
 -- Hash for pass123 with salt sister_academy_salt_2026:
 -- b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b
-INSERT INTO public.users (username, password_hash, role, full_name, is_active, created_at)
+INSERT INTO public.users (username, password, password_hash, role, full_name, is_active, created_at)
 VALUES 
-  ('student1', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 1', 1, NOW()::TEXT),
-  ('student2', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 2', 1, NOW()::TEXT),
-  ('student3', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 3', 1, NOW()::TEXT),
-  ('student4', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 4', 1, NOW()::TEXT),
-  ('student5', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 5', 1, NOW()::TEXT),
-  ('student6', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 6', 1, NOW()::TEXT),
-  ('student7', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 7', 1, NOW()::TEXT),
-  ('student8', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 8', 1, NOW()::TEXT),
-  ('student9', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 9', 1, NOW()::TEXT),
-  ('student10', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 10', 1, NOW()::TEXT)
+  ('student1', 'pass123', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 1', 1, NOW()::TEXT),
+  ('student2', 'pass123', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 2', 1, NOW()::TEXT),
+  ('student3', 'pass123', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 3', 1, NOW()::TEXT),
+  ('student4', 'pass123', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 4', 1, NOW()::TEXT),
+  ('student5', 'pass123', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 5', 1, NOW()::TEXT),
+  ('student6', 'pass123', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 6', 1, NOW()::TEXT),
+  ('student7', 'pass123', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 7', 1, NOW()::TEXT),
+  ('student8', 'pass123', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 8', 1, NOW()::TEXT),
+  ('student9', 'pass123', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 9', 1, NOW()::TEXT),
+  ('student10', 'pass123', 'b915152a5c5313d3950ef80d287391ea6b6b77202352b2104332d91795b2875b', 'student', 'Student 10', 1, NOW()::TEXT)
 ON CONFLICT (username) DO NOTHING;
 
 -- Initial Announcement

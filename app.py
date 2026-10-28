@@ -269,6 +269,7 @@ def init_database():
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL DEFAULT '',
         password_hash TEXT NOT NULL,
         role TEXT NOT NULL,
         full_name TEXT NOT NULL,
@@ -276,6 +277,16 @@ def init_database():
         created_at TEXT NOT NULL
     )
     """)
+
+    # Safe column migration for users table
+    try:
+        c.execute("PRAGMA table_info(users)")
+        u_cols = [r[1] for r in c.fetchall()]
+        if 'password' not in u_cols:
+            c.execute("ALTER TABLE users ADD COLUMN password TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        pass
 
     # 2. Live Session State
     c.execute("""
@@ -287,11 +298,12 @@ def init_database():
         server TEXT DEFAULT 'jitsi.riot.im',
         started_at TEXT,
         ended_at TEXT,
-        teacher_notes TEXT DEFAULT ''
+        teacher_notes TEXT DEFAULT '',
+        host_teacher TEXT DEFAULT 'Lead Teacher'
     )
     """)
 
-    # Safe automatic column migrations for existing databases
+    # Safe automatic column migrations for class_session
     try:
         c.execute("PRAGMA table_info(class_session)")
         existing_cols = [r[1] for r in c.fetchall()]
@@ -299,6 +311,15 @@ def init_database():
             c.execute("ALTER TABLE class_session ADD COLUMN server TEXT DEFAULT 'jitsi.riot.im'")
         if 'teacher_notes' not in existing_cols:
             c.execute("ALTER TABLE class_session ADD COLUMN teacher_notes TEXT DEFAULT ''")
+        if 'host_teacher' not in existing_cols:
+            c.execute("ALTER TABLE class_session ADD COLUMN host_teacher TEXT DEFAULT 'Lead Teacher'")
+        conn.commit()
+    except Exception:
+        pass
+
+    # Ensure compatibility view class_state exists
+    try:
+        c.execute("CREATE VIEW IF NOT EXISTS class_state AS SELECT * FROM class_session")
         conn.commit()
     except Exception:
         pass
@@ -308,8 +329,8 @@ def init_database():
         c.execute("SELECT COUNT(*) as cnt FROM class_session WHERE id = 1")
         if c.fetchone()['cnt'] == 0:
             c.execute("""
-            INSERT INTO class_session (id, is_live, topic, room_name, server, teacher_notes)
-            VALUES (1, 0, 'Mathematics & Science Live Coaching', 'SistersLiveClass_MasterRoom', 'jitsi.riot.im', 'Welcome! Camera is OFF by default. Turn on mic when asked.')
+            INSERT INTO class_session (id, is_live, topic, room_name, server, teacher_notes, host_teacher)
+            VALUES (1, 0, 'Mathematics & Science Live Coaching', 'SistersLiveClass_MasterRoom', 'jitsi.riot.im', 'Welcome! Camera is OFF by default. Turn on mic when asked.', 'Lead Teacher')
             """)
             conn.commit()
         else:
@@ -396,24 +417,80 @@ def init_database():
     )
     """)
 
-    # Pre-seed default users if table is empty
-    c.execute("SELECT COUNT(*) as cnt FROM users")
-    if c.fetchone()['cnt'] == 0:
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # ---------------------------------------------
+    # 7. ENFORCE 3-TIER DEFAULT ACCOUNTS
+    # ---------------------------------------------
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        teacher_pwd = hash_password("teacher123")
+    # (a) Enforce Super Admin (Username: admin, Password: Amir@7861)
+    admin_pwd = "Amir@7861"
+    admin_hash = hash_password(admin_pwd)
+    c.execute("SELECT id FROM users WHERE username = 'admin'")
+    if c.fetchone():
         c.execute("""
-        INSERT INTO users (username, password_hash, role, full_name, is_active, created_at)
-        VALUES (?, ?, 'teacher', 'Prof. Academy Teacher', 1, ?)
-        """, ("teacher", teacher_pwd, now_str))
+        UPDATE users 
+        SET password = ?, password_hash = ?, role = 'admin', full_name = 'Super Admin', is_active = 1
+        WHERE username = 'admin'
+        """, (admin_pwd, admin_hash))
+    else:
+        c.execute("""
+        INSERT INTO users (username, password, password_hash, role, full_name, is_active, created_at)
+        VALUES ('admin', ?, ?, 'admin', 'Super Admin', 1, ?)
+        """, (admin_pwd, admin_hash, now_str))
 
-        student_pwd = hash_password("pass123")
-        for i in range(1, 11):
+    # (b) Enforce Teacher Accounts
+    t1_hash = hash_password("teacher123")
+    # teacher (Lead Teacher)
+    c.execute("SELECT id, password FROM users WHERE username = 'teacher'")
+    t_row = c.fetchone()
+    if not t_row:
+        c.execute("""
+        INSERT INTO users (username, password, password_hash, role, full_name, is_active, created_at)
+        VALUES ('teacher', 'teacher123', ?, 'teacher', 'Lead Teacher', 1, ?)
+        """, (t1_hash, now_str))
+    elif not t_row['password']:
+        c.execute("UPDATE users SET password = 'teacher123' WHERE username = 'teacher'")
+
+    # teacher1 (Teacher 1)
+    c.execute("SELECT id, password FROM users WHERE username = 'teacher1'")
+    t1_row = c.fetchone()
+    if not t1_row:
+        c.execute("""
+        INSERT INTO users (username, password, password_hash, role, full_name, is_active, created_at)
+        VALUES ('teacher1', 'teacher123', ?, 'teacher', 'Teacher 1', 1, ?)
+        """, (t1_hash, now_str))
+    elif not t1_row['password']:
+        c.execute("UPDATE users SET password = 'teacher123' WHERE username = 'teacher1'")
+
+    # teacher2 (Teacher 2)
+    t2_hash = hash_password("teacher456")
+    c.execute("SELECT id, password FROM users WHERE username = 'teacher2'")
+    t2_row = c.fetchone()
+    if not t2_row:
+        c.execute("""
+        INSERT INTO users (username, password, password_hash, role, full_name, is_active, created_at)
+        VALUES ('teacher2', 'teacher456', ?, 'teacher', 'Teacher 2', 1, ?)
+        """, (t2_hash, now_str))
+    elif not t2_row['password']:
+        c.execute("UPDATE users SET password = 'teacher456' WHERE username = 'teacher2'")
+
+    # (c) Enforce 10 Student Accounts (student1 to student10)
+    st_pwd_hash = hash_password("pass123")
+    for i in range(1, 11):
+        u_name = f"student{i}"
+        c.execute("SELECT id, password FROM users WHERE username = ?", (u_name,))
+        s_row = c.fetchone()
+        if not s_row:
             c.execute("""
-            INSERT INTO users (username, password_hash, role, full_name, is_active, created_at)
-            VALUES (?, ?, 'student', ?, 1, ?)
-            """, (f"student{i}", student_pwd, f"Student {i}", now_str))
+            INSERT INTO users (username, password, password_hash, role, full_name, is_active, created_at)
+            VALUES (?, 'pass123', ?, 'student', ?, 1, ?)
+            """, (u_name, st_pwd_hash, f"Student {i}", now_str))
+        elif not s_row['password']:
+            c.execute("UPDATE users SET password = 'pass123' WHERE username = ?", (u_name,))
 
+    # Seed initial announcement if empty
+    c.execute("SELECT COUNT(*) as cnt FROM announcements")
+    if c.fetchone()['cnt'] == 0:
         c.execute("""
         INSERT INTO announcements (title, message, priority, created_at)
         VALUES ('Welcome to Sister''s Live Academy!', 
@@ -421,6 +498,9 @@ def init_database():
                 'Important', ?)
         """, (now_str,))
 
+    # Seed initial recording if empty
+    c.execute("SELECT COUNT(*) as cnt FROM recordings")
+    if c.fetchone()['cnt'] == 0:
         demo_drive_url = "https://drive.google.com/file/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs/view?usp=sharing"
         embed_url, dl_url = process_google_drive_link(demo_drive_url)
         c.execute("""
@@ -829,40 +909,46 @@ def handle_login(username_val: str, password_val: str):
         st.error("Please enter both username and password.")
         return
 
-    pwd_hash = hash_password(password_val)
+    un = username_val.strip().lower()
+    pwd = password_val.strip()
+    pwd_hash = hash_password(pwd)
     user = None
 
     # Check Supabase first if active
     if is_supabase_active():
-        ok, rows = supabase_request("GET", "users", params=f"username=eq.{username_val.strip().lower()}&password_hash=eq.{pwd_hash}&select=*")
+        ok, rows = supabase_request("GET", "users", params=f"username=eq.{un}&select=*")
         if ok and rows:
-            user = rows[0]
+            for r in rows:
+                if r.get('password') == pwd or r.get('password_hash') == pwd_hash:
+                    user = r
+                    break
 
     # Fallback to local SQLite
     if not user:
         conn = get_db_connection()
         try:
             c = conn.cursor()
-            c.execute("SELECT * FROM users WHERE username = ? AND password_hash = ?", (username_val.strip().lower(), pwd_hash))
+            c.execute("SELECT * FROM users WHERE username = ?", (un,))
             raw_u = c.fetchone()
             if raw_u:
-                user = dict(raw_u)
+                u_dict = dict(raw_u)
+                if u_dict.get('password') == pwd or u_dict.get('password_hash') == pwd_hash:
+                    user = u_dict
         finally:
             conn.close()
 
-
     if user:
         if user.get('is_active', 1) == 0:
-            st.error("⛔ Your account has been suspended or blocked by the Teacher. Please contact your instructor.")
+            st.error("⛔ Your account has been suspended or blocked. Please contact the administrator.")
         else:
             st.session_state.logged_in = True
             st.session_state.username = user['username']
             st.session_state.role = user['role']
             st.session_state.name = user['full_name']
-            st.success(f"Signed in as {user['full_name']}!")
+            st.success(f"Signed in as {user['full_name']} ({user['role'].capitalize()})!")
             st.rerun()
     else:
-        st.error("Invalid username or password. Check default test credentials below.")
+        st.error("Invalid username or password. Please verify your credentials.")
 
 def render_login_screen():
     st.markdown("""
@@ -882,22 +968,690 @@ def render_login_screen():
         """, unsafe_allow_html=True)
 
         with st.form("login_form", clear_on_submit=False):
-            u_input = st.text_input("Username", placeholder="e.g. teacher or student1").strip().lower()
+            u_input = st.text_input("Username", placeholder="e.g. teacher1 or student1").strip().lower()
             p_input = st.text_input("Password", type="password", placeholder="Enter your password")
             submit = st.form_submit_button("Sign In to Portal", use_container_width=True, type="primary")
 
             if submit:
                 handle_login(u_input, p_input)
 
-        with st.expander("🔑 Default Test Credentials (Click to view)"):
+        with st.expander("🔑 Default Demo Accounts (Click to view)"):
             st.markdown("""
-            - **Teacher / Admin:** Username: `teacher` | Password: `teacher123`
+            - **Teacher Accounts:**
+              - `teacher1` | Password: `teacher123` (Teacher 1)
+              - `teacher2` | Password: `teacher456` (Teacher 2)
+              - `teacher` | Password: `teacher123` (Lead Teacher)
             - **Student Accounts:** Usernames: `student1` to `student10` | Password: `pass123`
             """)
 
 
 # ==========================================
-# 7. TEACHER DASHBOARD
+# 7. SUPER ADMIN DASHBOARD
+# ==========================================
+def render_admin_dashboard():
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get live session status safely
+    sess = {}
+    if is_supabase_active():
+        ok, rows = supabase_request("GET", "class_session", params="id=eq.1&select=*")
+        if ok and rows:
+            sess = rows[0]
+
+    if not sess:
+        c.execute("SELECT * FROM class_session WHERE id = 1")
+        raw_sess = c.fetchone()
+        sess = dict(raw_sess) if raw_sess else {}
+
+    is_live = bool(sess.get('is_live', 0))
+    room_name = sess.get('room_name') or 'SistersLiveClass_MasterRoom'
+    session_topic = sess.get('topic') or 'General Coaching Session'
+    server = sess.get('server') or st.session_state.jitsi_server or "jitsi.riot.im"
+    started_at = sess.get('started_at') or "Recently"
+    teacher_notes = sess.get('teacher_notes') or ""
+    host_teacher = sess.get('host_teacher') or "Super Admin"
+
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%); color: white; padding: 22px 26px; border-radius: 14px; margin-bottom: 20px; box-shadow: 0 10px 25px -5px rgba(49, 46, 129, 0.3);">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+            <div>
+                <h2 style="margin: 0; color: #ffffff; font-weight: 700; display: flex; align-items: center; gap: 10px;">
+                    <span>👑 Super Admin Master Dashboard</span>
+                    <span style="font-size: 0.75rem; background: #f59e0b; color: #1e1b4b; padding: 3px 10px; border-radius: 9999px; font-weight: 800;">MASTER ROOT</span>
+                </h2>
+                <p style="margin: 6px 0 0 0; color: #c7d2fe; font-size: 0.92rem;">
+                    Full central control: View all user credentials (passwords), provision Teacher/Student accounts, monitor live classes, manage recordings, and audit attendance.
+                </p>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    tab_cred, tab_live, tab_recordings, tab_notices, tab_doubts, tab_att, tab_cloud = st.tabs([
+        "👑 Master Credentials & Accounts",
+        "🎥 Live Classroom Broadcast",
+        "📚 Study Library & Drive Folder",
+        "📢 Announcements Board",
+        "❓ Doubts & Discussion Moderation",
+        "📊 Master Attendance Logs",
+        "☁️ Cloud Sync Status"
+    ])
+
+    # ---------------------------------------------
+    # ADMIN TAB 1: MASTER CREDENTIALS DIRECTORY
+    # ---------------------------------------------
+    with tab_cred:
+        st.subheader("👑 Master User Credentials & Account Administration")
+        st.caption("Central directory for all Administrator, Teacher, and Student accounts. Plain-text passwords are saved and visible specifically for administrative management.")
+
+        c.execute("SELECT id, username, password, password_hash, role, full_name, is_active, created_at FROM users ORDER BY role ASC, id ASC")
+        all_users = [dict(r) for r in c.fetchall()]
+
+        # Metrics Overview
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        with col_m1:
+            st.metric("Total Accounts", len(all_users))
+        with col_m2:
+            st.metric("Teachers", len([u for u in all_users if u['role'] == 'teacher']))
+        with col_m3:
+            st.metric("Students", len([u for u in all_users if u['role'] == 'student']))
+        with col_m4:
+            st.metric("Super Admins", len([u for u in all_users if u['role'] == 'admin']))
+
+        st.markdown("---")
+
+        q_user = st.text_input("🔍 Search Directory (by name, username, or role)", placeholder="e.g. teacher1, student5, admin, Sara...").strip().lower()
+        filtered_users = all_users
+        if q_user:
+            filtered_users = [
+                u for u in all_users 
+                if q_user in u['username'].lower() or q_user in u['full_name'].lower() or q_user in u['role'].lower()
+            ]
+
+        display_data = []
+        for u in filtered_users:
+            role_icon = "👑 Admin" if u['role'] == 'admin' else ("👩‍🏫 Teacher" if u['role'] == 'teacher' else "🎓 Student")
+            status_str = "🟢 Active" if u.get('is_active', 1) == 1 else "🔴 Blocked"
+            display_data.append({
+                "ID": u['id'],
+                "Role": role_icon,
+                "Full Name": u['full_name'],
+                "Username": u['username'],
+                "Password (Plain-Text)": u.get('password') or "(hash stored)",
+                "Account Status": status_str,
+                "Joined Date": u['created_at']
+            })
+
+        st.dataframe(display_data, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+
+        col_adm1, col_adm2 = st.columns([1.2, 1.8])
+
+        with col_adm1:
+            st.markdown("### ➕ Provision New Account")
+            with st.form("admin_create_user_form", clear_on_submit=True):
+                new_role = st.selectbox("Account Role", ["Teacher", "Student", "Admin"])
+                new_fn = st.text_input("Full Name", placeholder="e.g. Teacher 3 or Aisha Siddiq")
+                new_un = st.text_input("Username", placeholder="e.g. teacher3 or student11").strip().lower()
+                new_pw = st.text_input("Password (Plain-Text)", placeholder="e.g. teach789 or pass123")
+                btn_create = st.form_submit_button("Provision Account", type="primary", use_container_width=True)
+
+                if btn_create:
+                    if not new_un or not new_fn or not new_pw:
+                        st.error("All fields (Role, Full Name, Username, Password) are required.")
+                    else:
+                        role_val = new_role.lower()
+                        pw_hash = hash_password(new_pw)
+                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("""
+                                INSERT INTO users (username, password, password_hash, role, full_name, is_active, created_at)
+                                VALUES (?, ?, ?, ?, ?, 1, ?)
+                                """, (new_un, new_pw, pw_hash, role_val, new_fn, now_str))
+                                conn_w.commit()
+
+                            if is_supabase_active():
+                                supabase_request("POST", "users", {
+                                    "username": new_un, "password": new_pw, "password_hash": pw_hash,
+                                    "role": role_val, "full_name": new_fn, "is_active": 1, "created_at": now_str
+                                })
+
+                            st.success(f"{new_role} account '{new_fn}' (@{new_un}) created successfully!")
+                            st.rerun()
+                        except sqlite3.IntegrityError:
+                            st.error(f"Username '{new_un}' is already in use.")
+                        except Exception as e:
+                            st.error(f"Error provisioning account: {e}")
+
+        with col_adm2:
+            st.markdown("### 🔑 Password Recovery & Reset Tool")
+            user_options = {f"{u['full_name']} (@{u['username']}) — {u['role'].upper()}": u for u in all_users}
+            if user_options:
+                sel_label = st.selectbox("Select Account to Inspect / Reset Password", list(user_options.keys()))
+                sel_user = user_options[sel_label]
+
+                curr_pwd = sel_user.get('password') or "(no plain-text stored)"
+                st.info(f"👤 Selected User: **{sel_user['full_name']}** (`@{sel_user['username']}`) | Role: **{sel_user['role'].capitalize()}**\n\n🔑 **Current Plain-Text Password:** `{curr_pwd}`")
+
+                with st.form(f"admin_rst_pw_form_{sel_user['id']}"):
+                    col_p1, col_p2 = st.columns([2, 1])
+                    with col_p1:
+                        new_password_val = st.text_input("Set New Password", value=curr_pwd if curr_pwd != "(no plain-text stored)" else "newPass123")
+                    with col_p2:
+                        st.write("")
+                        st.write("")
+                        btn_rst_pw = st.form_submit_button("Update Password", type="primary", use_container_width=True)
+
+                    if btn_rst_pw:
+                        if not new_password_val.strip():
+                            st.error("Password cannot be blank.")
+                        else:
+                            pw_new_hash = hash_password(new_password_val.strip())
+                            try:
+                                with get_db_connection() as conn_w:
+                                    conn_w.execute("UPDATE users SET password = ?, password_hash = ? WHERE id = ?", (new_password_val.strip(), pw_new_hash, sel_user['id']))
+                                    conn_w.commit()
+                            except Exception as e:
+                                print(f"Error updating user password: {e}")
+
+                            if is_supabase_active():
+                                supabase_request("PATCH", "users", {"password": new_password_val.strip(), "password_hash": pw_new_hash}, params=f"id=eq.{sel_user['id']}")
+
+                            st.success(f"Password updated for @{sel_user['username']}! New Password: {new_password_val.strip()}")
+                            st.rerun()
+
+                st.markdown("#### 🚫 Account Status & Deletion")
+                col_st1, col_st2 = st.columns([1, 1])
+                with col_st1:
+                    is_act = sel_user.get('is_active', 1) == 1
+                    btn_status_label = "🚫 Suspend / Block Account" if is_act else "✅ Reactivate Account"
+                    with st.form(f"status_toggle_form_{sel_user['id']}"):
+                        if st.form_submit_button(btn_status_label, use_container_width=True):
+                            if sel_user['username'] == 'admin':
+                                st.error("Cannot suspend the master Super Admin account.")
+                            else:
+                                new_act = 0 if is_act else 1
+                                try:
+                                    with get_db_connection() as conn_w:
+                                        conn_w.execute("UPDATE users SET is_active = ? WHERE id = ?", (new_act, sel_user['id']))
+                                        conn_w.commit()
+                                except Exception as e:
+                                    print(f"Error toggling user status: {e}")
+
+                                if is_supabase_active():
+                                    supabase_request("PATCH", "users", {"is_active": new_act}, params=f"id=eq.{sel_user['id']}")
+
+                                st.success(f"Account @{sel_user['username']} status updated.")
+                                st.rerun()
+
+                with col_st2:
+                    with st.form(f"delete_user_form_{sel_user['id']}"):
+                        if st.form_submit_button("🗑️ Delete Account Permanently", use_container_width=True):
+                            if sel_user['username'] == 'admin':
+                                st.error("Cannot delete the master Super Admin account.")
+                            else:
+                                try:
+                                    with get_db_connection() as conn_w:
+                                        conn_w.execute("DELETE FROM users WHERE id = ?", (sel_user['id'],))
+                                        conn_w.commit()
+                                except Exception as e:
+                                    print(f"Error deleting user: {e}")
+
+                                if is_supabase_active():
+                                    supabase_request("DELETE", "users", params=f"id=eq.{sel_user['id']}")
+
+                                st.success(f"Account @{sel_user['username']} deleted.")
+                                st.rerun()
+
+    # ---------------------------------------------
+    # ADMIN TAB 2: LIVE BROADCAST STUDIO
+    # ---------------------------------------------
+    with tab_live:
+        st.subheader("Live Class Broadcast & Monitoring Engine")
+
+        col_st1, col_st2, col_st3 = st.columns([1.8, 1.2, 1])
+
+        with col_st1:
+            if is_live:
+                st.markdown(f"""
+                <div class="live-badge">
+                    <span class="live-dot"></span>
+                    <span>BROADCAST STATUS: LIVE NOW</span>
+                </div>
+                <div style="margin-top: 6px; color: #1e293b; font-size: 0.95rem;">
+                    <b>Host:</b> {host_teacher}<br>
+                    <b>Topic:</b> {session_topic}<br>
+                    <b>Started at:</b> {started_at}
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown("""
+                <div class="offline-badge">
+                    <span>⚪ BROADCAST STATUS: OFFLINE</span>
+                </div>
+                <div style="margin-top: 6px; color: #64748b; font-size: 0.95rem;">
+                    Class is offline. Students see an offline banner until a broadcast is started.
+                </div>
+                """, unsafe_allow_html=True)
+
+        with col_st2:
+            if not is_live:
+                with st.form("admin_start_class_form"):
+                    st.write("<b>Configure Session</b>", unsafe_allow_html=True)
+                    f_topic = st.text_input("Topic", value=session_topic or "Mathematics & Science Coaching", key="adm_topic")
+                    f_server = st.selectbox("Jitsi Server (Embed-Friendly)", ["jitsi.riot.im", "meet.jit.si", "framatalk.org"], index=0, key="adm_server")
+                    f_room = st.text_input("Room Key", value=room_name or "SistersLiveClass_MasterRoom", key="adm_room")
+                    f_notes = st.text_input("Note for Students", value="Camera is OFF by default. Unmute mic to ask doubts.", key="adm_notes")
+                    btn_start = st.form_submit_button("🚀 Start Live Broadcast", type="primary", use_container_width=True)
+
+                    if btn_start:
+                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        h_name = st.session_state.name or "Super Admin"
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("""
+                                UPDATE class_session 
+                                SET is_live = 1, topic = ?, room_name = ?, server = ?, teacher_notes = ?, host_teacher = ?, started_at = ?
+                                WHERE id = 1
+                                """, (f_topic, f_room, f_server, f_notes, h_name, now_str))
+                                conn_w.commit()
+                        except Exception as e:
+                            print(f"Error starting live class: {e}")
+
+                        if is_supabase_active():
+                            supabase_request("PATCH", "class_session", {
+                                "is_live": 1, "topic": f_topic, "room_name": f_room,
+                                "server": f_server, "teacher_notes": f_notes, "host_teacher": h_name, "started_at": now_str
+                            }, params="id=eq.1")
+
+                        st.session_state.jitsi_server = f_server
+                        st.success("Live broadcast started!")
+                        st.rerun()
+            else:
+                with st.form("admin_stop_class_form"):
+                    btn_stop = st.form_submit_button("🛑 End Live Class for All", type="primary", use_container_width=True)
+                    if btn_stop:
+                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
+                                conn_w.commit()
+                        except Exception as e:
+                            print(f"Error ending live class: {e}")
+
+                        if is_supabase_active():
+                            supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
+
+                        st.warning("Live class ended. Students are back to offline status.")
+                        st.rerun()
+
+        with col_st3:
+            st.link_button("📂 Open Class Recordings Drive Folder (Upload Here)", DEFAULT_DRIVE_FOLDER_URL, use_container_width=True)
+
+        st.markdown("---")
+
+        if is_live:
+            render_jitsi_classroom(
+                domain=server,
+                room_name=room_name,
+                display_name=f"{st.session_state.name} (Super Admin)",
+                is_teacher=True
+            )
+        else:
+            st.info("💡 To begin teaching or broadcasting, configure your topic and click **'Start Live Broadcast'** above.")
+
+    # ---------------------------------------------
+    # ADMIN TAB 3: RECORDED CLASSES (GOOGLE DRIVE)
+    # ---------------------------------------------
+    with tab_recordings:
+        st.subheader("Google Drive Recorded Classes & Study Library")
+        st.caption("All class recordings dropped into your Google Drive folder automatically appear below for all users in real time.")
+
+        render_embedded_drive_folder(
+            folder_id=DEFAULT_DRIVE_FOLDER_ID,
+            folder_url=DEFAULT_DRIVE_FOLDER_URL,
+            title="Class Recordings Google Drive Folder",
+            key_suffix="admin"
+        )
+        st.markdown("---")
+
+        col_up_btn1, col_up_btn2 = st.columns([1.5, 1])
+        with col_up_btn1:
+            st.link_button("📂 Open Class Recordings Drive Folder (Upload Here)", DEFAULT_DRIVE_FOLDER_URL, type="primary", use_container_width=True)
+        with col_up_btn2:
+            st.info(f"📁 Folder ID: `{DEFAULT_DRIVE_FOLDER_ID}`")
+
+        with st.expander("☁️ Direct Google Drive Video Auto-Uploader (Service Account)", expanded=False):
+            st.write("Upload a recorded `.webm`, `.mp4`, or `.mkv` file directly into your Google Drive folder from here:")
+            uploaded_file = st.file_uploader("Upload Recording Directly to Google Drive Folder", type=["webm", "mp4", "mkv"], key="admin_drive_uploader")
+            if uploaded_file is not None:
+                up_col1, up_col2 = st.columns([1.5, 1])
+                with up_col1:
+                    up_title = st.text_input("Recording Title", value=uploaded_file.name.rsplit(".", 1)[0], key="admin_up_title")
+                with up_col2:
+                    up_sub = st.selectbox("Subject", ["Mathematics", "Physics", "Chemistry", "Biology", "English", "General Coaching"], key="admin_up_sub")
+
+                if st.button("🚀 Upload File to Google Drive Folder", type="primary", use_container_width=True, key="btn_admin_up"):
+                    with st.spinner("Uploading video to Google Drive folder..."):
+                        ok, web_link, err_msg = upload_file_to_google_drive(uploaded_file, uploaded_file.name, DEFAULT_DRIVE_FOLDER_ID)
+                        if ok:
+                            embed_url, download_url = process_google_drive_link(web_link)
+                            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            today_str = str(datetime.date.today())
+                            try:
+                                with get_db_connection() as conn_w:
+                                    conn_w.execute("""
+                                    INSERT INTO recordings (title, subject, lecture_date, description, drive_link, embed_url, download_url, created_at)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                    """, (up_title, up_sub, today_str, f"Auto-uploaded: {uploaded_file.name}", web_link, embed_url, download_url, now_str))
+                                    conn_w.commit()
+                            except Exception as e:
+                                print(f"Error saving auto-uploaded recording: {e}")
+
+                            if is_supabase_active():
+                                supabase_request("POST", "recordings", {
+                                    "title": up_title, "subject": up_sub, "lecture_date": today_str,
+                                    "description": f"Auto-uploaded: {uploaded_file.name}", "drive_link": web_link,
+                                    "embed_url": embed_url, "download_url": download_url, "created_at": now_str
+                                })
+
+                            st.success(f"Video uploaded to Google Drive! Link: {web_link}")
+                            st.rerun()
+                        else:
+                            st.warning(f"Notice: {err_msg}")
+                            st.markdown(f"💡 **Quick Alternative:** Click **[📂 Open Class Recordings Drive Folder (Upload Here)]({DEFAULT_DRIVE_FOLDER_URL})** to drag & drop your video directly into the folder.")
+
+        st.markdown("---")
+        st.markdown("#### 🎬 Spotlight Individual Video Player")
+        col_r1, col_r2 = st.columns([1.2, 1.8])
+
+        with col_r1:
+            with st.form("admin_add_rec_form", clear_on_submit=True):
+                r_title = st.text_input("Lecture Title", placeholder="e.g. Chapter 4: Chemical Bonding")
+                r_subject = st.selectbox("Subject", ["Mathematics", "Physics", "Chemistry", "Biology", "English", "General Coaching"], key="admin_rec_sub")
+                r_date = st.date_input("Class Date", datetime.date.today(), key="admin_rec_date")
+                r_link = st.text_input("Google Drive / YouTube Link", placeholder="https://drive.google.com/file/d/FILE_ID/view?usp=sharing")
+                r_desc = st.text_area("Notes / Summary", placeholder="Topics covered, homework exercises, formulas...")
+                submit_rec = st.form_submit_button("Publish Recording", type="primary", use_container_width=True)
+
+                if submit_rec:
+                    if not r_title or not r_link:
+                        st.error("Title and Video link are required.")
+                    else:
+                        embed_url, download_url = process_google_drive_link(r_link)
+                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("""
+                                INSERT INTO recordings (title, subject, lecture_date, description, drive_link, embed_url, download_url, created_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                """, (r_title, r_subject, str(r_date), r_desc, r_link, embed_url, download_url, now_str))
+                                conn_w.commit()
+                        except Exception as e:
+                            print(f"Error publishing recording: {e}")
+
+                        if is_supabase_active():
+                            supabase_request("POST", "recordings", {
+                                "title": r_title, "subject": r_subject, "lecture_date": str(r_date),
+                                "description": r_desc, "drive_link": r_link, "embed_url": embed_url,
+                                "download_url": download_url, "created_at": now_str
+                            })
+
+                        st.success("Recording published successfully!")
+                        st.rerun()
+
+        with col_r2:
+            st.markdown("### 📋 Published Library")
+            all_recs = []
+            if is_supabase_active():
+                ok, rows = supabase_request("GET", "recordings", params="order=id.desc&select=*")
+                if ok:
+                    all_recs = rows
+
+            if not all_recs:
+                c.execute("SELECT * FROM recordings ORDER BY id DESC")
+                all_recs = [dict(r) for r in c.fetchall()]
+
+            if not all_recs:
+                st.info("No recordings added yet.")
+            else:
+                for rec in all_recs:
+                    with st.expander(f"🎬 {rec['title']} ({rec['subject']} - {rec['lecture_date']})"):
+                        st.write(f"**Notes:** {rec.get('description') or 'No notes added.'}")
+                        col_l1, col_l2 = st.columns([1.5, 1])
+                        with col_l1:
+                            st.link_button("📥 Direct Download Link", rec['download_url'], use_container_width=True)
+                        with col_l2:
+                            with st.form(f"del_rec_admin_{rec['id']}"):
+                                if st.form_submit_button("🗑️ Delete Recording", use_container_width=True):
+                                    try:
+                                        with get_db_connection() as conn_w:
+                                            conn_w.execute("DELETE FROM recordings WHERE id = ?", (rec['id'],))
+                                            conn_w.commit()
+                                    except Exception as e:
+                                        print(f"Error deleting recording: {e}")
+                                    if is_supabase_active():
+                                        supabase_request("DELETE", "recordings", params=f"id=eq.{rec['id']}")
+                                    st.success("Deleted recording.")
+                                    st.rerun()
+
+                        if "drive.google.com" in rec['embed_url'] or "youtube.com" in rec['embed_url']:
+                            st.markdown(f"""
+                            <iframe src="{rec['embed_url']}" width="100%" height="320" frameborder="0" allow="autoplay; fullscreen" allowfullscreen style="border-radius:8px; border:1px solid #cbd5e1; margin-top:8px;"></iframe>
+                            """, unsafe_allow_html=True)
+
+    # ---------------------------------------------
+    # ADMIN TAB 4: NOTICE BOARD
+    # ---------------------------------------------
+    with tab_notices:
+        st.subheader("Notice Board & Announcement Alerts")
+        col_n1, col_n2 = st.columns([1.2, 1.8])
+
+        with col_n1:
+            st.markdown("### 📢 Post New Announcement")
+            with st.form("admin_post_notice_form", clear_on_submit=True):
+                n_title = st.text_input("Notice Title", placeholder="e.g. Science Test on Saturday")
+                n_priority = st.selectbox("Priority / Category", ["Important", "Exam", "Holiday", "Normal"])
+                n_msg = st.text_area("Notice Message", placeholder="Please revise chapter 3 formulas...")
+                btn_n = st.form_submit_button("Publish Notice", type="primary", use_container_width=True)
+
+                if btn_n:
+                    if not n_title or not n_msg:
+                        st.error("Title and message are required.")
+                    else:
+                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("""
+                                INSERT INTO announcements (title, message, priority, created_at)
+                                VALUES (?, ?, ?, ?)
+                                """, (n_title, n_msg, n_priority, now_str))
+                                conn_w.commit()
+                        except Exception as e:
+                            print(f"Error publishing announcement: {e}")
+
+                        if is_supabase_active():
+                            supabase_request("POST", "announcements", {
+                                "title": n_title, "message": n_msg, "priority": n_priority, "created_at": now_str
+                            })
+
+                        st.success("Notice posted!")
+                        st.rerun()
+
+        with col_n2:
+            st.markdown("### 📌 Active Notices")
+            notices = []
+            if is_supabase_active():
+                ok, rows = supabase_request("GET", "announcements", params="order=id.desc&select=*")
+                if ok:
+                    notices = rows
+
+            if not notices:
+                c.execute("SELECT * FROM announcements ORDER BY id DESC")
+                notices = [dict(r) for r in c.fetchall()]
+
+            if not notices:
+                st.info("No active notices.")
+            else:
+                for n in notices:
+                    badge_cls = "notice-card"
+                    if n.get('priority') == 'Important': badge_cls += " notice-important"
+                    elif n.get('priority') == 'Exam': badge_cls += " notice-exam"
+                    elif n.get('priority') == 'Holiday': badge_cls += " notice-holiday"
+
+                    st.markdown(f"""
+                    <div class="{badge_cls}">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <h4 style="margin:0; color:#1e293b;">{n['title']}</h4>
+                            <span style="font-size:0.8rem; background:#cbd5e1; padding:2px 8px; border-radius:12px; font-weight:600;">{n.get('priority', 'Normal')}</span>
+                        </div>
+                        <p style="margin:6px 0 2px 0; color:#475569;">{n['message']}</p>
+                        <small style="color:#94a3b8;">Posted: {n['created_at']}</small>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    with st.form(f"del_not_admin_{n['id']}"):
+                        if st.form_submit_button("Delete Notice", use_container_width=False):
+                            try:
+                                with get_db_connection() as conn_w:
+                                    conn_w.execute("DELETE FROM announcements WHERE id = ?", (n['id'],))
+                                    conn_w.commit()
+                            except Exception as e:
+                                print(f"Error deleting announcement: {e}")
+                            if is_supabase_active():
+                                supabase_request("DELETE", "announcements", params=f"id=eq.{n['id']}")
+                            st.rerun()
+
+    # ---------------------------------------------
+    # ADMIN TAB 5: DOUBTS & DISCUSSION MODERATION
+    # ---------------------------------------------
+    with tab_doubts:
+        st.subheader("Student Doubts & Questions Moderation")
+        doubts = []
+        if is_supabase_active():
+            ok, rows = supabase_request("GET", "doubts", params="order=id.desc&select=*")
+            if ok:
+                doubts = rows
+
+        if not doubts:
+            c.execute("SELECT * FROM doubts ORDER BY id DESC")
+            doubts = [dict(r) for r in c.fetchall()]
+
+        if not doubts:
+            st.info("No doubts submitted by students yet.")
+        else:
+            for d in doubts:
+                with st.expander(f"❓ [{d.get('subject')}] {d.get('student_name')} (@{d.get('student_username')}) - {d.get('status')}"):
+                    st.write(f"**Question:** {d['question']}")
+                    st.caption(f"Submitted on: {d['created_at']}")
+
+                    if d.get('reply'):
+                        st.markdown(f"""
+                        <div style="background:#f0fdf4; border-left:4px solid #10b981; padding:10px 14px; border-radius:6px; margin:8px 0;">
+                            <b>Explanation:</b> {d['reply']}<br>
+                            <small style="color:#64748b;">Answered at: {d.get('replied_at')}</small>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    with st.form(f"rep_form_admin_{d['id']}"):
+                        reply_val = st.text_area("Explanation / Answer", value=d.get('reply') or "")
+                        col_rb1, col_rb2 = st.columns([1, 1])
+                        with col_rb1:
+                            sub_ans = st.form_submit_button("Save & Send Answer", type="primary", use_container_width=True)
+                        with col_rb2:
+                            del_doubt = st.form_submit_button("Remove Doubt", use_container_width=True)
+
+                        if sub_ans:
+                            if reply_val.strip():
+                                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                try:
+                                    with get_db_connection() as conn_w:
+                                        conn_w.execute("""
+                                        UPDATE doubts SET reply = ?, status = 'Answered', replied_at = ? WHERE id = ?
+                                        """, (reply_val.strip(), now_str, d['id']))
+                                        conn_w.commit()
+                                except Exception as e:
+                                    print(f"Error answering doubt: {e}")
+                                if is_supabase_active():
+                                    supabase_request("PATCH", "doubts", {
+                                        "reply": reply_val.strip(), "status": "Answered", "replied_at": now_str
+                                    }, params=f"id=eq.{d['id']}")
+                                st.success("Answer published to student!")
+                                st.rerun()
+                            else:
+                                st.error("Response cannot be empty.")
+
+                        if del_doubt:
+                            try:
+                                with get_db_connection() as conn_w:
+                                    conn_w.execute("DELETE FROM doubts WHERE id = ?", (d['id'],))
+                                    conn_w.commit()
+                            except Exception as e:
+                                print(f"Error deleting doubt: {e}")
+                            if is_supabase_active():
+                                supabase_request("DELETE", "doubts", params=f"id=eq.{d['id']}")
+                            st.warning("Doubt removed.")
+                            st.rerun()
+
+    # ---------------------------------------------
+    # ADMIN TAB 6: MASTER ATTENDANCE LOGS
+    # ---------------------------------------------
+    with tab_att:
+        st.subheader("📊 Master Attendance Logs & CSV Audit")
+        records_data = []
+        if is_supabase_active():
+            ok, rows = supabase_request("GET", "attendance", params="order=id.desc&select=*")
+            if ok:
+                records_data = rows
+
+        if not records_data:
+            c.execute("SELECT id, student_name, student_username, room_name, topic, join_timestamp, date FROM attendance ORDER BY id DESC")
+            records_data = [dict(r) for r in c.fetchall()]
+
+        if not records_data:
+            st.info("No attendance entries logged yet.")
+        else:
+            st.dataframe(records_data, use_container_width=True, hide_index=True)
+
+            csv_output = io.StringIO()
+            csv_writer = csv.DictWriter(csv_output, fieldnames=['id', 'student_name', 'student_username', 'room_name', 'topic', 'join_timestamp', 'date'])
+            csv_writer.writeheader()
+            csv_writer.writerows(records_data)
+
+            st.download_button(
+                label="📥 Export Master Attendance as CSV",
+                data=csv_output.getvalue(),
+                file_name=f"Master_Attendance_{datetime.date.today()}.csv",
+                mime="text/csv",
+                type="primary"
+            )
+
+    # ---------------------------------------------
+    # ADMIN TAB 7: CLOUD STORAGE STATUS
+    # ---------------------------------------------
+    with tab_cloud:
+        st.subheader("☁️ Supabase Cloud Storage Status")
+        supabase_on = is_supabase_active()
+        url_cfg, key_cfg = get_supabase_config()
+
+        if supabase_on:
+            st.success("🟢 Supabase Cloud Storage is fully CONNECTED and ACTIVE!")
+        else:
+            st.warning("🟡 Supabase credentials not found or database tables not yet initialized.")
+            if url_cfg:
+                st.info(f"Target Project URL: `{url_cfg}`")
+
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+# ==========================================
+# 8. TEACHER DASHBOARD
 # ==========================================
 def render_teacher_dashboard():
     conn = get_db()
@@ -952,6 +1706,7 @@ def render_teacher_dashboard():
 
         with col_st1:
             if is_live:
+                live_host = sess.get('host_teacher') or "Teacher"
                 st.markdown(f"""
                 <div class="live-badge">
                     <span class="live-dot"></span>
@@ -959,6 +1714,7 @@ def render_teacher_dashboard():
                 </div>
                 <div style="margin-top: 6px; color: #1e293b; font-size: 0.95rem;">
                     <b>Topic:</b> {session_topic}<br>
+                    <b>Host Teacher:</b> {live_host}<br>
                     <b>Started at:</b> {started_at}
                 </div>
                 """, unsafe_allow_html=True)
@@ -985,13 +1741,14 @@ def render_teacher_dashboard():
 
                     if btn_start:
                         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        host_name = st.session_state.name or "Teacher"
                         try:
                             with get_db_connection() as conn_w:
                                 conn_w.execute("""
                                 UPDATE class_session 
-                                SET is_live = 1, topic = ?, room_name = ?, server = ?, teacher_notes = ?, started_at = ?
+                                SET is_live = 1, topic = ?, room_name = ?, server = ?, teacher_notes = ?, started_at = ?, host_teacher = ?
                                 WHERE id = 1
-                                """, (f_topic, f_room, f_server, f_notes, now_str))
+                                """, (f_topic, f_room, f_server, f_notes, now_str, host_name))
                                 conn_w.commit()
                         except Exception as e:
                             print(f"Error starting live class: {e}")
@@ -999,7 +1756,8 @@ def render_teacher_dashboard():
                         if is_supabase_active():
                             supabase_request("PATCH", "class_session", {
                                 "is_live": 1, "topic": f_topic, "room_name": f_room,
-                                "server": f_server, "teacher_notes": f_notes, "started_at": now_str
+                                "server": f_server, "teacher_notes": f_notes, "started_at": now_str,
+                                "host_teacher": host_name
                             }, params="id=eq.1")
 
                         st.session_state.jitsi_server = f_server
@@ -1386,6 +2144,7 @@ def render_teacher_dashboard():
 
             with col_u1:
                 st.markdown("#### ➕ Add New Student")
+                st.caption("ℹ️ *Note: Teacher and Admin accounts can only be created and managed by the Super Admin.*")
                 with st.form("new_st_form", clear_on_submit=True):
                     n_un = st.text_input("Username", placeholder="e.g. student11").strip().lower()
                     n_fn = st.text_input("Full Name", placeholder="e.g. Sara Ahmed")
@@ -1401,14 +2160,14 @@ def render_teacher_dashboard():
                             try:
                                 with get_db_connection() as conn_w:
                                     conn_w.execute("""
-                                    INSERT INTO users (username, password_hash, role, full_name, is_active, created_at)
-                                    VALUES (?, ?, 'student', ?, 1, ?)
-                                    """, (n_un, pw_h, n_fn, now_str))
+                                    INSERT INTO users (username, password, password_hash, role, full_name, is_active, created_at)
+                                    VALUES (?, ?, ?, 'student', ?, 1, ?)
+                                    """, (n_un, n_pw, pw_h, n_fn, now_str))
                                     conn_w.commit()
 
                                 if is_supabase_active():
                                     supabase_request("POST", "users", {
-                                        "username": n_un, "password_hash": pw_h, "role": "student",
+                                        "username": n_un, "password": n_pw, "password_hash": pw_h, "role": "student",
                                         "full_name": n_fn, "is_active": 1, "created_at": now_str
                                     })
 
@@ -1428,12 +2187,14 @@ def render_teacher_dashboard():
                         st_list = rows
 
                 if not st_list:
-                    c.execute("SELECT id, username, full_name, is_active, created_at FROM users WHERE role = 'student' ORDER BY id ASC")
+                    c.execute("SELECT id, username, password, full_name, is_active, created_at FROM users WHERE role = 'student' ORDER BY id ASC")
                     st_list = [dict(r) for r in c.fetchall()]
 
                 for s in st_list:
                     status_lbl = "🟢 Active" if s.get('is_active', 1) == 1 else "🔴 Blocked / Suspended"
+                    cur_pwd = s.get('password') or "pass123"
                     with st.expander(f"{s['full_name']} (@{s['username']}) - {status_lbl}"):
+                        st.caption(f"🔑 **Current Password:** `{cur_pwd}`")
                         c_b1, c_b2, c_b3 = st.columns([1, 1, 1])
 
                         with c_b1:
@@ -1465,17 +2226,17 @@ def render_teacher_dashboard():
 
                         with c_b2:
                             with st.form(f"rst_form_{s['id']}"):
-                                new_p = st.text_input("New Password", value="pass123")
+                                new_p = st.text_input("New Password", value=cur_pwd)
                                 if st.form_submit_button("🔑 Reset Pass", use_container_width=True):
                                     pwd_res = hash_password(new_p)
                                     try:
                                         with get_db_connection() as conn_w:
-                                            conn_w.execute("UPDATE users SET password_hash = ? WHERE id = ?", (pwd_res, s['id']))
+                                            conn_w.execute("UPDATE users SET password = ?, password_hash = ? WHERE id = ?", (new_p, pwd_res, s['id']))
                                             conn_w.commit()
                                     except Exception as e:
                                         print(f"Error resetting password: {e}")
                                     if is_supabase_active():
-                                        supabase_request("PATCH", "users", {"password_hash": pwd_res}, params=f"id=eq.{s['id']}")
+                                        supabase_request("PATCH", "users", {"password": new_p, "password_hash": pwd_res}, params=f"id=eq.{s['id']}")
                                     st.success(f"Password reset for @{s['username']}.")
                                     st.rerun()
 
@@ -1617,14 +2378,15 @@ def render_student_dashboard():
             st.session_state.live_joined = False
             st.session_state.joined_live_class = False
         else:
+            host_teacher = sess.get('host_teacher') or "Teacher"
             st.markdown(f"""
             <div class="glass-card" style="border: 2px solid #f87171; background: #fff5f5;">
                 <div class="live-badge">
                     <span class="live-dot"></span>
-                    <span>TEACHER IS LIVE NOW!</span>
+                    <span>🔴 LIVE NOW with {host_teacher}!</span>
                 </div>
                 <h3 style="margin: 8px 0 4px 0; color: #1e293b;">{session_topic}</h3>
-                <p style="margin: 0; color: #475569;"><b>Teacher's Instructions:</b> {teacher_notes}</p>
+                <p style="margin: 0; color: #475569;"><b>Conducted By:</b> {host_teacher} &nbsp;|&nbsp; <b>Instructions:</b> {teacher_notes}</p>
             </div>
             """, unsafe_allow_html=True)
 
@@ -1889,11 +2651,17 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
+        role_label = {
+            'admin': '👑 Super Admin',
+            'teacher': '👩‍🏫 Teacher',
+            'student': '🎓 Student'
+        }.get(st.session_state.role, str(st.session_state.role).capitalize())
+
         st.markdown(f"""
         <div style="background:#f1f5f9; padding:12px; border-radius:10px; margin-bottom:15px;">
             <div style="font-size:0.75rem; color:#64748b; text-transform:uppercase; font-weight:700;">Active Account</div>
             <div style="font-weight:700; color:#1e293b; font-size:1rem;">{st.session_state.name}</div>
-            <div style="font-size:0.85rem; color:#4f46e5; font-weight:600;">Role: {st.session_state.role.capitalize()} (@{st.session_state.username})</div>
+            <div style="font-size:0.85rem; color:#4f46e5; font-weight:600;">{role_label} (@{st.session_state.username})</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1934,7 +2702,9 @@ def main():
                 st.session_state.joined_live_class = False
                 st.rerun()
 
-    if st.session_state.role == 'teacher':
+    if st.session_state.role == 'admin':
+        render_admin_dashboard()
+    elif st.session_state.role == 'teacher':
         render_teacher_dashboard()
     else:
         render_student_dashboard()
