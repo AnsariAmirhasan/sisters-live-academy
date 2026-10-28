@@ -780,10 +780,20 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             'microphone', 'camera', 'desktop', 'chat', 'raisehand',
             'videoquality', 'tileview', 'mute-everyone', 'security', 'whiteboard', 'hangup'
         ])
+        student_restrictions_js = ""
     else:
+        # Strict student security: No hangup button (prevents 'End meeting for all' popup),
+        # no security/mute-everyone/livestreaming
         tb_buttons = json.dumps([
-            'microphone', 'camera', 'chat', 'raisehand', 'tileview', 'fullscreen', 'hangup'
+            'microphone', 'camera', 'chat', 'raisehand', 'tileview', 'fullscreen'
         ])
+        student_restrictions_js = """,
+                            disableRemoteMute: true,
+                            remoteVideoMenu: {
+                                disableKick: true,
+                                disableGrantModerator: true,
+                                disablePrivateChat: false
+                            }"""
 
 
     topbar_right = """
@@ -980,12 +990,13 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                             startWithVideoMuted: true,
                             startWithAudioMuted: {'false' if is_teacher else 'true'},
                             disableDeepLinking: true,
-                            toolbarButtons: {tb_buttons}
+                            toolbarButtons: {tb_buttons}{student_restrictions_js}
                         }},
                         interfaceConfigOverwrite: {{
                             SHOW_JITSI_WATERMARK: false,
                             SHOW_WATERMARK_FOR_GUESTS: false,
-                            TOOLBAR_ALWAYS_VISIBLE: true
+                            TOOLBAR_ALWAYS_VISIBLE: true,
+                            TOOLBAR_BUTTONS: {tb_buttons}
                         }}
                     }};
                     const api = new JitsiMeetExternalAPI(domain, options);
