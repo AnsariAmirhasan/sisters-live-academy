@@ -122,6 +122,20 @@ ON CONFLICT (username) DO NOTHING;
 INSERT INTO public.announcements (title, message, priority, created_at)
 VALUES ('Welcome to Sister''s Live Academy!', 'Live sessions are held Monday to Saturday at 6:00 PM. Cloud sync is active via Supabase.', 'Important', NOW()::TEXT);
 
+-- 7. Fees Table
+CREATE TABLE IF NOT EXISTS public.fees (
+    id BIGSERIAL PRIMARY KEY,
+    student_username TEXT NOT NULL,
+    student_name TEXT NOT NULL,
+    month_title TEXT NOT NULL,
+    amount TEXT NOT NULL,
+    due_date TEXT NOT NULL,
+    status TEXT DEFAULT 'Pending',
+    paid_date TEXT DEFAULT '-',
+    marked_by TEXT DEFAULT '-',
+    note TEXT DEFAULT ''
+);
+
 -- Enable Row Level Security (RLS) with open policy for service_role and authenticated users
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.class_session ENABLE ROW LEVEL SECURITY;
@@ -129,6 +143,7 @@ ALTER TABLE public.attendance ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.recordings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.announcements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.doubts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.fees ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Allow all operations on users" ON public.users FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all operations on class_session" ON public.class_session FOR ALL USING (true) WITH CHECK (true);
@@ -136,3 +151,4 @@ CREATE POLICY "Allow all operations on attendance" ON public.attendance FOR ALL 
 CREATE POLICY "Allow all operations on recordings" ON public.recordings FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all operations on announcements" ON public.announcements FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all operations on doubts" ON public.doubts FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all operations on fees" ON public.fees FOR ALL USING (true) WITH CHECK (true);

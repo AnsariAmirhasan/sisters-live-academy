@@ -417,8 +417,24 @@ def init_database():
     )
     """)
 
+    # 7. Student Fees Table
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS fees (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_username TEXT NOT NULL,
+        student_name TEXT NOT NULL,
+        month_title TEXT NOT NULL,
+        amount TEXT NOT NULL,
+        due_date TEXT NOT NULL,
+        status TEXT DEFAULT 'Pending',
+        paid_date TEXT DEFAULT '-',
+        marked_by TEXT DEFAULT '-',
+        note TEXT DEFAULT ''
+    )
+    """)
+
     # ---------------------------------------------
-    # 7. ENFORCE 3-TIER DEFAULT ACCOUNTS
+    # 8. ENFORCE 3-TIER DEFAULT ACCOUNTS
     # ---------------------------------------------
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -491,6 +507,17 @@ def init_database():
                 'Complete syllabus blueprint, exam strategy, and doubt-clearing structure.', 
                 ?, ?, ?, ?)
         """, (demo_drive_url, embed_url, dl_url, now_str))
+
+    # Seed initial demo fees if empty
+    c.execute("SELECT COUNT(*) as cnt FROM fees")
+    if c.fetchone()['cnt'] == 0:
+        c.execute("""
+        INSERT INTO fees (student_username, student_name, month_title, amount, due_date, status, paid_date, marked_by, note)
+        VALUES 
+            ('student1', 'Student 1', 'October 2026 Tuition', '1500', '2026-10-10', 'Paid', '2026-10-05', 'Lead Teacher', 'Paid via UPI ref #98721'),
+            ('student2', 'Student 2', 'October 2026 Tuition', '1500', '2026-10-10', 'Pending', '-', '-', 'Dues reminder sent'),
+            ('student3', 'Student 3', 'October 2026 Tuition', '1500', '2026-10-10', 'Paid', '2026-10-08', 'Teacher 1', 'Paid in Cash')
+        """)
 
     conn.commit()
     conn.close()
@@ -968,6 +995,354 @@ def render_login_screen():
 
 
 # ==========================================
+# 6.5. STUDENT FEES MANAGEMENT & PORTAL
+# ==========================================
+def render_fees_management(is_admin: bool = True):
+    st.subheader("💳 Student Fees & Invoices Management")
+    st.caption("Manage student monthly fees, issue tuition invoices, record payments, and audit fee ledgers.")
+
+    # 1. Fetch all fees
+    fees_list = []
+    if is_supabase_active():
+        ok, rows = supabase_request("GET", "fees", params="order=id.desc&select=*")
+        if ok and rows:
+            fees_list = rows
+
+    if not fees_list:
+        with get_db_connection() as conn_r:
+            c_r = conn_r.cursor()
+            c_r.execute("SELECT * FROM fees ORDER BY id DESC")
+            fees_list = [dict(r) for r in c_r.fetchall()]
+
+    # Fetch all students for dropdown
+    students_list = []
+    with get_db_connection() as conn_s:
+        c_s = conn_s.cursor()
+        c_s.execute("SELECT username, full_name FROM users WHERE role = 'student' ORDER BY full_name ASC")
+        students_list = [dict(r) for r in c_s.fetchall()]
+
+    # Summary Metrics
+    total_invoices = len(fees_list)
+    paid_invoices = [f for f in fees_list if f.get('status') == 'Paid']
+    pending_invoices = [f for f in fees_list if f.get('status') == 'Pending']
+
+    total_collected = sum(int(str(f['amount']).replace(',', '')) for f in paid_invoices if str(f.get('amount', '')).replace(',', '').isdigit())
+    total_outstanding = sum(int(str(f['amount']).replace(',', '')) for f in pending_invoices if str(f.get('amount', '')).replace(',', '').isdigit())
+
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    with col_m1:
+        st.metric("Total Invoices", total_invoices)
+    with col_m2:
+        st.metric("Total Collected", f"₹{total_collected:,}")
+    with col_m3:
+        st.metric("Pending Dues", f"₹{total_outstanding:,}")
+    with col_m4:
+        st.metric("Pending Invoices", len(pending_invoices))
+
+    st.markdown("---")
+
+    col_f1, col_f2 = st.columns([1.3, 1.7])
+
+    with col_f1:
+        st.markdown("### ➕ Issue New Fee Invoice")
+        with st.form(f"issue_fee_form_{'adm' if is_admin else 'tch'}", clear_on_submit=True):
+            target_type = st.radio("Issue To", ["Single Student", "All Registered Students (Batch)"], horizontal=True)
+
+            sel_student = None
+            if target_type == "Single Student":
+                if students_list:
+                    student_opts = {f"{s['full_name']} (@{s['username']})": s for s in students_list}
+                    chosen_lbl = st.selectbox("Select Student", list(student_opts.keys()))
+                    sel_student = student_opts[chosen_lbl]
+                else:
+                    st.warning("No students registered yet.")
+
+            default_month = datetime.date.today().strftime("%B %Y") + " Monthly Tuition"
+            f_month = st.text_input("Month / Invoice Title", value=default_month, placeholder="e.g. November 2026 Tuition")
+            f_amt = st.text_input("Fee Amount (₹)", value="1500", placeholder="e.g. 1500")
+            f_due = st.date_input("Due Date", value=datetime.date.today() + datetime.timedelta(days=10))
+            f_note = st.text_input("Instructions / Payment Note", value="Pay via UPI or Cash to Academy Office", placeholder="e.g. UPI to academy@upi")
+
+            btn_issue = st.form_submit_button("🚀 Issue Fee Invoice", type="primary", use_container_width=True)
+
+            if btn_issue:
+                if not f_month.strip() or not f_amt.strip():
+                    st.error("Month/Title and Fee Amount are required.")
+                elif not f_amt.strip().replace(",", "").isdigit():
+                    st.error("Fee Amount must be a valid number.")
+                else:
+                    clean_amt = f_amt.strip().replace(",", "")
+                    due_str = str(f_due)
+                    targets = []
+                    if target_type == "Single Student":
+                        if sel_student:
+                            targets.append(sel_student)
+                    else:
+                        targets = students_list
+
+                    if not targets:
+                        st.error("No target student found to issue invoice.")
+                    else:
+                        try:
+                            with get_db_connection() as conn_w:
+                                for t in targets:
+                                    conn_w.execute("""
+                                    INSERT INTO fees (student_username, student_name, month_title, amount, due_date, status, paid_date, marked_by, note)
+                                    VALUES (?, ?, ?, ?, ?, 'Pending', '-', '-', ?)
+                                    """, (t['username'], t['full_name'], f_month.strip(), clean_amt, due_str, f_note.strip()))
+                                conn_w.commit()
+
+                            if is_supabase_active():
+                                for t in targets:
+                                    supabase_request("POST", "fees", {
+                                        "student_username": t['username'],
+                                        "student_name": t['full_name'],
+                                        "month_title": f_month.strip(),
+                                        "amount": clean_amt,
+                                        "due_date": due_str,
+                                        "status": "Pending",
+                                        "paid_date": "-",
+                                        "marked_by": "-",
+                                        "note": f_note.strip()
+                                    })
+
+                            st.success(f"Successfully issued {len(targets)} fee invoice(s) for '{f_month.strip()}' (₹{clean_amt})!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error issuing fee invoices: {e}")
+
+    with col_f2:
+        st.markdown("### ✍️ Collect Payment / Update Status")
+        if not fees_list:
+            st.info("No fee invoices created yet.")
+        else:
+            fee_opts = {
+                f"#{f['id']} | {f['student_name']} (@{f['student_username']}) - {f['month_title']} (₹{f['amount']}) [{f.get('status','Pending')}]": f 
+                for f in fees_list
+            }
+            sel_fee_lbl = st.selectbox("Select Invoice to Update", list(fee_opts.keys()), key=f"fee_up_sel_{'adm' if is_admin else 'tch'}")
+            target_fee = fee_opts[sel_fee_lbl]
+
+            st.markdown(f"""
+            <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:12px; margin-bottom:12px;">
+                <b>Student:</b> {target_fee['student_name']} (<code>@{target_fee['student_username']}</code>)<br>
+                <b>Title:</b> {target_fee['month_title']} &nbsp;|&nbsp; <b>Amount:</b> <span style="color:#059669; font-weight:700;">₹{target_fee['amount']}</span><br>
+                <b>Due Date:</b> {target_fee['due_date']} &nbsp;|&nbsp; <b>Status:</b> {'🟢 Paid' if target_fee['status'] == 'Paid' else '🔴 Pending Dues'}<br>
+                <b>Payment Date:</b> {target_fee.get('paid_date', '-')} &nbsp;|&nbsp; <b>Marked By:</b> {target_fee.get('marked_by', '-')}
+            </div>
+            """, unsafe_allow_html=True)
+
+            c_act1, c_act2, c_act3 = st.columns([1, 1, 1])
+
+            with c_act1:
+                with st.form(f"mark_paid_form_{target_fee['id']}_{'adm' if is_admin else 'tch'}"):
+                    if st.form_submit_button("✅ Mark as PAID", type="primary", use_container_width=True):
+                        today_str = str(datetime.date.today())
+                        marker = st.session_state.name or ("Admin" if is_admin else "Teacher")
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("""
+                                UPDATE fees SET status = 'Paid', paid_date = ?, marked_by = ? WHERE id = ?
+                                """, (today_str, marker, target_fee['id']))
+                                conn_w.commit()
+
+                            if is_supabase_active():
+                                supabase_request("PATCH", "fees", {
+                                    "status": "Paid", "paid_date": today_str, "marked_by": marker
+                                }, params=f"id=eq.{target_fee['id']}")
+
+                            st.success(f"Invoice #{target_fee['id']} marked as PAID by {marker}!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error marking as paid: {e}")
+
+            with c_act2:
+                with st.form(f"mark_pending_form_{target_fee['id']}_{'adm' if is_admin else 'tch'}"):
+                    if st.form_submit_button("↩️ Mark as UNPAID", use_container_width=True):
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("""
+                                UPDATE fees SET status = 'Pending', paid_date = '-', marked_by = '-' WHERE id = ?
+                                """, (target_fee['id'],))
+                                conn_w.commit()
+
+                            if is_supabase_active():
+                                supabase_request("PATCH", "fees", {
+                                    "status": "Pending", "paid_date": "-", "marked_by": "-"
+                                }, params=f"id=eq.{target_fee['id']}")
+
+                            st.warning(f"Invoice #{target_fee['id']} reset to PENDING.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error updating fee: {e}")
+
+            with c_act3:
+                with st.form(f"delete_fee_form_{target_fee['id']}_{'adm' if is_admin else 'tch'}"):
+                    if st.form_submit_button("🗑️ Delete Invoice", use_container_width=True):
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("DELETE FROM fees WHERE id = ?", (target_fee['id'],))
+                                conn_w.commit()
+
+                            if is_supabase_active():
+                                supabase_request("DELETE", "fees", params=f"id=eq.{target_fee['id']}")
+
+                            st.success(f"Invoice #{target_fee['id']} removed.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error deleting fee: {e}")
+
+    st.markdown("---")
+
+    # Invoices Ledger & Filter
+    st.markdown("### 📋 Student Fees Master Ledger")
+    col_flt1, col_flt2, col_flt3 = st.columns([1, 1, 1])
+    with col_flt1:
+        st_filter = st.selectbox("Filter by Student", ["All Students"] + [f"{s['full_name']} (@{s['username']})" for s in students_list], key=f"flt_st_{'adm' if is_admin else 'tch'}")
+    with col_flt2:
+        status_filter = st.selectbox("Filter by Status", ["All Invoices", "Pending Only", "Paid Only"], key=f"flt_status_{'adm' if is_admin else 'tch'}")
+    with col_flt3:
+        search_kw = st.text_input("Search Ledger", placeholder="e.g. October, 1500, Cash...", key=f"flt_srch_{'adm' if is_admin else 'tch'}").strip().lower()
+
+    filtered_fees = fees_list
+    if st_filter != "All Students":
+        u_extracted = st_filter.split("(@")[-1].replace(")", "")
+        filtered_fees = [f for f in filtered_fees if f['student_username'] == u_extracted]
+
+    if status_filter == "Pending Only":
+        filtered_fees = [f for f in filtered_fees if f.get('status') == 'Pending']
+    elif status_filter == "Paid Only":
+        filtered_fees = [f for f in filtered_fees if f.get('status') == 'Paid']
+
+    if search_kw:
+        filtered_fees = [
+            f for f in filtered_fees
+            if search_kw in f['student_name'].lower() or search_kw in f['student_username'].lower()
+            or search_kw in f['month_title'].lower() or search_kw in str(f.get('amount', '')).lower()
+            or search_kw in str(f.get('note', '')).lower()
+        ]
+
+    table_data = []
+    for f in filtered_fees:
+        st_badge = "🟢 Paid" if f.get('status') == 'Paid' else "🔴 Pending"
+        table_data.append({
+            "Invoice #": f['id'],
+            "Student Name": f['student_name'],
+            "Username": f['student_username'],
+            "Month / Title": f['month_title'],
+            "Amount": f"₹{f['amount']}",
+            "Due Date": f['due_date'],
+            "Status": st_badge,
+            "Paid Date": f.get('paid_date', '-'),
+            "Marked By": f.get('marked_by', '-'),
+            "Note": f.get('note', '')
+        })
+
+    if not table_data:
+        st.info("No fee invoices match the selected filter.")
+    else:
+        st.dataframe(table_data, use_container_width=True, hide_index=True)
+
+        # Export CSV
+        csv_out = io.StringIO()
+        csv_writer = csv.DictWriter(csv_out, fieldnames=[
+            "Invoice #", "Student Name", "Username", "Month / Title", "Amount", "Due Date", "Status", "Paid Date", "Marked By", "Note"
+        ])
+        csv_writer.writeheader()
+        csv_writer.writerows(table_data)
+
+        st.download_button(
+            label="📥 Export Fee Ledger (CSV)",
+            data=csv_out.getvalue(),
+            file_name=f"Sisters_Academy_Fees_{datetime.date.today()}.csv",
+            mime="text/csv",
+            type="primary",
+            key=f"dl_fees_csv_{'adm' if is_admin else 'tch'}"
+        )
+
+
+def render_student_fees_portal():
+    st.subheader("💳 My Tuition Fee & Receipt Portal")
+    st.caption("Review your monthly fee dues, payment history, payment instructions, and official receipts.")
+
+    # 1. Fetch fees for this student
+    my_fees = []
+    if is_supabase_active():
+        ok, rows = supabase_request("GET", "fees", params=f"student_username=eq.{st.session_state.username}&order=id.desc&select=*")
+        if ok and rows:
+            my_fees = rows
+
+    if not my_fees:
+        with get_db_connection() as conn_r:
+            c_r = conn_r.cursor()
+            c_r.execute("SELECT * FROM fees WHERE student_username = ? ORDER BY id DESC", (st.session_state.username,))
+            my_fees = [dict(r) for r in c_r.fetchall()]
+
+    # Summary metrics
+    paid_items = [f for f in my_fees if f.get('status') == 'Paid']
+    pending_items = [f for f in my_fees if f.get('status') == 'Pending']
+    total_paid = sum(int(str(f['amount']).replace(',', '')) for f in paid_items if str(f.get('amount', '')).replace(',', '').isdigit())
+    total_due = sum(int(str(f['amount']).replace(',', '')) for f in pending_items if str(f.get('amount', '')).replace(',', '').isdigit())
+
+    col_s1, col_s2, col_s3 = st.columns(3)
+    with col_s1:
+        st.metric("Total Invoices", len(my_fees))
+    with col_s2:
+        st.metric("Total Paid", f"₹{total_paid:,}")
+    with col_s3:
+        st.metric("Pending Dues", f"₹{total_due:,}")
+
+    st.markdown("---")
+
+    col_p1, col_p2 = st.columns([1.8, 1.2])
+
+    with col_p1:
+        st.markdown("### 📋 Fee Invoices & Payment Receipts")
+        if not my_fees:
+            st.info("No fee invoices issued for your account yet.")
+        else:
+            for f in my_fees:
+                is_p = f.get('status') == 'Paid'
+                card_border = "#10b981" if is_p else "#ef4444"
+                card_bg = "#f0fdf4" if is_p else "#fff1f2"
+                status_tag = '<span style="background:#10b981; color:white; padding:3px 10px; border-radius:12px; font-weight:700; font-size:0.8rem;">PAID</span>' if is_p else '<span style="background:#ef4444; color:white; padding:3px 10px; border-radius:12px; font-weight:700; font-size:0.8rem;">DUE PENDING</span>'
+
+                st.markdown(f"""
+                <div style="background:{card_bg}; border:1px solid {card_border}; border-radius:12px; padding:16px; margin-bottom:12px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                        <div>
+                            <h4 style="margin:0; color:#1e293b;">{f['month_title']}</h4>
+                            <span style="font-size:1.15rem; font-weight:700; color:{'#059669' if is_p else '#dc2626'};">₹{f['amount']}</span>
+                        </div>
+                        {status_tag}
+                    </div>
+                    <div style="margin-top:8px; font-size:0.9rem; color:#475569;">
+                        <b>Due Date:</b> {f['due_date']} &nbsp;|&nbsp; 
+                        <b>Paid Date:</b> {f.get('paid_date', '-')} &nbsp;|&nbsp; 
+                        <b>Verified By:</b> {f.get('marked_by', '-')}
+                    </div>
+                    {f'<div style="margin-top:4px; font-size:0.85rem; color:#64748b;"><b>Note:</b> {f["note"]}</div>' if f.get('note') else ''}
+                </div>
+                """, unsafe_allow_html=True)
+
+    with col_p2:
+        st.markdown("### 💳 How to Pay Your Tuition Fees")
+        st.markdown("""
+        <div class="glass-card" style="padding:18px;">
+            <h4 style="margin-top:0; color:#1e293b;">📌 Payment Instructions</h4>
+            <ul style="color:#475569; font-size:0.9rem; padding-left:18px; margin-bottom:12px;">
+                <li><b>UPI ID:</b> <code>sistersacademy@upi</code></li>
+                <li><b>Google Pay / PhonePe / Paytm:</b> Scan the Academy QR Code at the office or send to <code>9876543210</code></li>
+                <li><b>Cash Payment:</b> Pay in person at the Academy Reception Desk.</li>
+            </ul>
+            <div style="background:#e0f2fe; border-left:4px solid #0284c7; padding:10px; border-radius:6px; font-size:0.85rem; color:#0369a1;">
+                ℹ️ <b>Important:</b> After completing your UPI payment, share your payment reference number / screenshot with your Teacher or Administrator to have your fee receipt marked as <b>Paid</b>.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# ==========================================
 # 7. SUPER ADMIN DASHBOARD
 # ==========================================
 def render_admin_dashboard():
@@ -1010,8 +1385,9 @@ def render_admin_dashboard():
     </div>
     """, unsafe_allow_html=True)
 
-    tab_cred, tab_live, tab_recordings, tab_notices, tab_doubts, tab_att, tab_cloud = st.tabs([
+    tab_cred, tab_fees, tab_live, tab_recordings, tab_notices, tab_doubts, tab_att, tab_cloud = st.tabs([
         "👑 Master Credentials & Accounts",
+        "💳 Student Fees & Invoices",
         "🎥 Live Classroom Broadcast",
         "📚 Study Library & Drive Folder",
         "📢 Announcements Board",
@@ -1187,6 +1563,12 @@ def render_admin_dashboard():
 
                                 st.success(f"Account @{sel_user['username']} deleted.")
                                 st.rerun()
+
+    # ---------------------------------------------
+    # ADMIN TAB 1.5: FEES MANAGEMENT
+    # ---------------------------------------------
+    with tab_fees:
+        render_fees_management(is_admin=True)
 
     # ---------------------------------------------
     # ADMIN TAB 2: LIVE BROADCAST STUDIO
@@ -1669,9 +2051,10 @@ def render_teacher_dashboard():
     </div>
     """, unsafe_allow_html=True)
 
-    tab_live, tab_recordings, tab_notices, tab_doubts, tab_students, tab_cloud = st.tabs([
+    tab_live, tab_recordings, tab_fees, tab_notices, tab_doubts, tab_students, tab_cloud = st.tabs([
         "🔴 Live Studio & Screen Share",
         "📚 Recorded Classes (Google Drive)",
+        "💳 Student Fees & Invoices",
         "📢 Notice Board",
         "❓ Doubt Box & Chat",
         "👥 Attendance & Student Accounts",
@@ -1928,6 +2311,12 @@ def render_teacher_dashboard():
                             st.markdown(f"""
                             <iframe src="{rec['embed_url']}" width="100%" height="320" frameborder="0" allow="autoplay; fullscreen" allowfullscreen style="border-radius:8px; border:1px solid #cbd5e1; margin-top:8px;"></iframe>
                             """, unsafe_allow_html=True)
+
+    # ---------------------------------------------
+    # TEACHER TAB 2.5: FEES MANAGEMENT
+    # ---------------------------------------------
+    with tab_fees:
+        render_fees_management(is_admin=False)
 
     # ---------------------------------------------
     # TEACHER TAB 3: NOTICE BOARD
@@ -2317,9 +2706,33 @@ def render_student_dashboard():
             </div>
             """, unsafe_allow_html=True)
 
-    tab_live, tab_library, tab_doubts, tab_att = st.tabs([
+    # 2. Fee Dues Notification Banner
+    c.execute("SELECT * FROM fees WHERE student_username = ? AND status = 'Pending' ORDER BY due_date ASC", (st.session_state.username,))
+    pending_fees = [dict(r) for r in c.fetchall()]
+    if pending_fees:
+        total_due_amt = sum(int(str(f['amount']).replace(',', '')) for f in pending_fees if str(f.get('amount', '')).replace(',', '').isdigit())
+        due_items = ", ".join([f"{f['month_title']} (₹{f['amount']})" for f in pending_fees[:2]])
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #fff1f2 0%, #fee2e2 100%); border-left: 5px solid #ef4444; padding: 14px 18px; border-radius: 10px; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(239, 68, 68, 0.12);">
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+                <div>
+                    <b style="color: #991b1b; font-size: 1.05rem;">🔔 Pending Tuition Fee Reminder:</b>
+                    <span style="color: #7f1d1d; font-size: 0.95rem; margin-left: 6px;">
+                        You have <b>{len(pending_fees)} pending invoice(s)</b> totaling <b style="color:#b91c1c; font-size:1.05rem;">₹{total_due_amt:,}</b> ({due_items}).
+                    </span>
+                </div>
+                <span style="font-size: 0.8rem; background: #ef4444; color: white; padding: 4px 12px; border-radius: 9999px; font-weight: 700; letter-spacing: 0.5px;">ACTION REQUIRED</span>
+            </div>
+            <div style="color: #b91c1c; font-size: 0.88rem; margin-top: 6px;">
+                Please clear your monthly tuition dues on time via UPI/Cash to maintain continuous access to all academy features. Click the <b>💳 My Fee Portal</b> tab below to view your full fee receipt and payment instructions.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    tab_live, tab_library, tab_fees, tab_doubts, tab_att = st.tabs([
         "🎥 Live Classroom",
         "📖 Recorded Lectures & Notes",
+        "💳 My Fee Portal",
         "❓ Ask Doubts & Discussion",
         "📊 My Attendance"
     ])
@@ -2505,6 +2918,12 @@ def render_student_dashboard():
                     st.link_button("🔗 Open in Google Drive", r['drive_link'], use_container_width=True)
                     st.caption("Tip: Download to your phone or laptop for offline revision without buffering.")
                 st.markdown("---")
+
+    # ---------------------------------------------
+    # STUDENT TAB 2.5: MY FEE PORTAL
+    # ---------------------------------------------
+    with tab_fees:
+        render_student_fees_portal()
 
     # ---------------------------------------------
     # STUDENT TAB 3: ASK DOUBTS
