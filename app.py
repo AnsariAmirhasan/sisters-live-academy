@@ -123,6 +123,16 @@ def init_database():
     )
     """)
 
+    # Automatic column migrations for existing databases
+    try:
+        c.execute("ALTER TABLE class_session ADD COLUMN server TEXT DEFAULT 'meet.ffmuc.net'")
+    except Exception:
+        pass
+    try:
+        c.execute("ALTER TABLE class_session ADD COLUMN teacher_notes TEXT DEFAULT ''")
+    except Exception:
+        pass
+
     # Ensure single row exists for live session state
     c.execute("SELECT COUNT(*) as cnt FROM class_session WHERE id = 1")
     if c.fetchone()['cnt'] == 0:
@@ -130,6 +140,10 @@ def init_database():
         INSERT INTO class_session (id, is_live, topic, room_name, server, teacher_notes)
         VALUES (1, 0, 'Mathematics & Science Live Coaching', 'SistersLiveClass_MasterRoom', 'meet.ffmuc.net', 'Welcome! Camera is OFF by default. Turn on mic when asked.')
         """)
+    else:
+        # If server column was just added, make sure it has a valid default
+        c.execute("UPDATE class_session SET server = 'meet.ffmuc.net' WHERE server IS NULL OR server = ''")
+
 
     # 3. Attendance
     c.execute("""
@@ -627,14 +641,17 @@ def render_teacher_dashboard():
     conn = get_db()
     c = conn.cursor()
 
-    # Get live session status
+    # Get live session status safely
     c.execute("SELECT * FROM class_session WHERE id = 1")
-    sess = c.fetchone()
-    is_live = bool(sess['is_live'])
-    room_name = sess['room_name']
-    session_topic = sess['topic']
-    server = sess['server'] or "meet.ffmuc.net"
-    teacher_notes = sess['teacher_notes'] or ""
+    raw_sess = c.fetchone()
+    sess = dict(raw_sess) if raw_sess else {}
+    is_live = bool(sess.get('is_live', 0))
+    room_name = sess.get('room_name') or 'SistersLiveClass_MasterRoom'
+    session_topic = sess.get('topic') or 'General Coaching Session'
+    server = sess.get('server') or "meet.ffmuc.net"
+    teacher_notes = sess.get('teacher_notes') or ""
+    started_at = sess.get('started_at') or "Recently"
+
 
     st.markdown(f"""
     <div class="hero-banner">
@@ -672,7 +689,7 @@ def render_teacher_dashboard():
                 </div>
                 <div style="margin-top: 6px; color: #1e293b; font-size: 0.95rem;">
                     <b>Topic:</b> {session_topic}<br>
-                    <b>Started at:</b> {sess['started_at']}
+                    <b>Started at:</b> {started_at}
                 </div>
                 """, unsafe_allow_html=True)
             else:
@@ -1064,12 +1081,14 @@ def render_student_dashboard():
     # ---------------------------------------------
     with tab_live:
         c.execute("SELECT * FROM class_session WHERE id = 1")
-        sess = c.fetchone()
-        is_live = bool(sess['is_live'])
-        room_name = sess['room_name']
-        session_topic = sess['topic']
-        server = sess['server'] or "meet.ffmuc.net"
-        teacher_notes = sess['teacher_notes'] or ""
+        raw_sess = c.fetchone()
+        sess = dict(raw_sess) if raw_sess else {}
+        is_live = bool(sess.get('is_live', 0))
+        room_name = sess.get('room_name') or 'SistersLiveClass_MasterRoom'
+        session_topic = sess.get('topic') or 'General Coaching Session'
+        server = sess.get('server') or "meet.ffmuc.net"
+        teacher_notes = sess.get('teacher_notes') or ""
+
 
         if not is_live:
             st.markdown("""
