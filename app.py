@@ -39,7 +39,7 @@ if "role" not in st.session_state:
 if "name" not in st.session_state:
     st.session_state.name = None
 if "jitsi_server" not in st.session_state:
-    st.session_state.jitsi_server = "meet.ffmuc.net"
+    st.session_state.jitsi_server = "jitsi.riot.im"
 if "live_joined" not in st.session_state:
     st.session_state.live_joined = False
 
@@ -159,7 +159,7 @@ def init_database():
         is_live INTEGER DEFAULT 0,
         topic TEXT DEFAULT 'General Coaching Session',
         room_name TEXT DEFAULT 'SistersClass_Room101',
-        server TEXT DEFAULT 'meet.ffmuc.net',
+        server TEXT DEFAULT 'jitsi.riot.im',
         started_at TEXT,
         ended_at TEXT,
         teacher_notes TEXT DEFAULT ''
@@ -168,7 +168,7 @@ def init_database():
 
     # Automatic column migrations for existing databases
     try:
-        c.execute("ALTER TABLE class_session ADD COLUMN server TEXT DEFAULT 'meet.ffmuc.net'")
+        c.execute("ALTER TABLE class_session ADD COLUMN server TEXT DEFAULT 'jitsi.riot.im'")
     except Exception:
         pass
     try:
@@ -181,10 +181,12 @@ def init_database():
     if c.fetchone()['cnt'] == 0:
         c.execute("""
         INSERT INTO class_session (id, is_live, topic, room_name, server, teacher_notes)
-        VALUES (1, 0, 'Mathematics & Science Live Coaching', 'SistersLiveClass_MasterRoom', 'meet.ffmuc.net', 'Welcome! Camera is OFF by default. Turn on mic when asked.')
+        VALUES (1, 0, 'Mathematics & Science Live Coaching', 'SistersLiveClass_MasterRoom', 'jitsi.riot.im', 'Welcome! Camera is OFF by default. Turn on mic when asked.')
         """)
     else:
-        c.execute("UPDATE class_session SET server = 'meet.ffmuc.net' WHERE server IS NULL OR server = ''")
+        # Migrate any blocked or empty server domains to embed-friendly jitsi.riot.im
+        c.execute("UPDATE class_session SET server = 'jitsi.riot.im' WHERE server = 'meet.ffmuc.net' OR server IS NULL OR server = ''")
+
 
     # 3. Attendance
     c.execute("""
@@ -393,204 +395,256 @@ st.markdown("""
 
 
 # ==========================================
-# 5. JITSI EMBED & SCREEN RECORDER
+# 5. JITSI MEET EXTERNAL API & IN-APP FULLSCREEN CLASSROOM
 # ==========================================
-def build_jitsi_url(server: str, room_name: str, display_name: str, is_teacher: bool) -> str:
-    safe_name = urllib.parse.quote(display_name)
-    audio_param = "false" if is_teacher else "true"
-    server_clean = server.replace("https://", "").replace("http://", "").strip("/")
-    
-    jitsi_url = (
-        f"https://{server_clean}/{room_name}"
-        f"#userInfo.displayName=\"{safe_name}\""
-        f"&config.prejoinPageEnabled=false"
-        f"&config.startWithVideoMuted=true"
-        f"&config.startWithAudioMuted={audio_param}"
-        f"&config.disableDeepLinking=true"
-    )
-    return jitsi_url
-
-def render_jitsi_embed(jitsi_url: str):
-    iframe_html = f"""
-    <div style="width: 100%; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.12); margin-top: 10px;">
-        <iframe 
-            src="{jitsi_url}" 
-            style="width: 100%; height: 680px; border: 0;"
-            allow="microphone; camera; display-capture; fullscreen; autoplay; clipboard-write"
-            allowfullscreen>
-        </iframe>
-    </div>
+def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_teacher: bool):
     """
-    components.html(iframe_html, height=700, scrolling=False)
+    Renders Jitsi Meet using the official JitsiMeetExternalAPI (external_api.js) inside st.components.v1.html.
+    Features:
+    - Zero external redirects (no external tab buttons).
+    - ⛶ In-app Fullscreen Toggle button via element.requestFullscreen().
+    - ⏺️ HTML5 1-click Screen + Voice Recorder with live timer and direct .webm download for teacher.
+    - Video camera OFF by default (startWithVideoMuted=true).
+    - Pre-join check screen skipped (prejoinPageEnabled=false).
+    - Proper permissions (camera, microphone, display-capture, fullscreen, autoplay).
+    """
+    domain_clean = domain.replace("https://", "").replace("http://", "").strip("/")
+    if not domain_clean or "ffmuc.net" in domain_clean:
+        domain_clean = "jitsi.riot.im"
 
-def render_html5_recorder():
-    recorder_code = """
+    if is_teacher:
+        tb_buttons = json.dumps([
+            'microphone', 'camera', 'desktop', 'chat', 'raisehand',
+            'videoquality', 'tileview', 'mute-everyone', 'security', 'whiteboard', 'hangup'
+        ])
+    else:
+        tb_buttons = json.dumps([
+            'microphone', 'camera', 'chat', 'raisehand', 'tileview', 'hangup'
+        ])
+
+    topbar_right = """
+        <div style="display:flex; align-items:center; gap:8px;">
+            <span id="rec-dot" style="width:10px; height:10px; border-radius:50%; background:#64748b; display:inline-block;"></span>
+            <span id="rec-timer" style="font-family:monospace; color:#38bdf8; font-weight:bold; font-size:0.95rem;">00:00:00</span>
+            <button id="start-rec-btn" onclick="startRecording()" style="background:#ef4444; color:white; border:none; padding:6px 14px; border-radius:6px; font-size:0.85rem; font-weight:600; cursor:pointer;">⏺️ Record Screen & Voice</button>
+            <button id="stop-rec-btn" onclick="stopRecording()" style="display:none; background:#10b981; color:white; border:none; padding:6px 14px; border-radius:6px; font-size:0.85rem; font-weight:600; cursor:pointer;">💾 Stop & Download Video</button>
+        </div>
+    """ if is_teacher else """
+        <span style="color:#94a3b8; font-size:0.85rem; font-weight:500;">🎥 Live Audio/Video Stream Active</span>
+    """
+
+    recorder_script = """
+        let mediaRecorder;
+        let recordedChunks = [];
+        let timerInterval;
+        let recSeconds = 0;
+
+        function formatTimer(s) {
+            const h = String(Math.floor(s / 3600)).padStart(2, '0');
+            const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+            const sc = String(s % 60).padStart(2, '0');
+            return `${h}:${m}:${sc}`;
+        }
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getDisplayMedia({
+                    video: { cursor: "always" },
+                    audio: true
+                });
+
+                recordedChunks = [];
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+
+                mediaRecorder.ondataavailable = (e) => {
+                    if (e.data.size > 0) recordedChunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = () => {
+                    clearInterval(timerInterval);
+                    document.getElementById('rec-timer').innerText = "00:00:00";
+                    document.getElementById('rec-dot').style.background = "#64748b";
+                    document.getElementById('rec-dot').style.boxShadow = "none";
+                    document.getElementById('start-rec-btn').style.display = "inline-block";
+                    document.getElementById('stop-rec-btn').style.display = "none";
+
+                    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.style.display = 'none';
+                    a.href = url;
+                    const d = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+                    a.download = `Sisters_Academy_Class_${d}.webm`;
+                    document.body.appendChild(a);
+                    a.click();
+                    setTimeout(() => {
+                        document.body.removeChild(a);
+                        window.URL.revokeObjectURL(url);
+                    }, 100);
+                };
+
+                stream.getVideoTracks()[0].onended = () => {
+                    if (mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+                };
+
+                mediaRecorder.start(1000);
+                document.getElementById('start-rec-btn').style.display = "none";
+                document.getElementById('stop-rec-btn').style.display = "inline-block";
+                document.getElementById('rec-dot').style.background = "#ef4444";
+                document.getElementById('rec-dot').style.boxShadow = "0 0 10px #ef4444";
+
+                recSeconds = 0;
+                timerInterval = setInterval(() => {
+                    recSeconds++;
+                    document.getElementById('rec-timer').innerText = formatTimer(recSeconds);
+                }, 1000);
+
+            } catch (err) {
+                alert("Recording request cancelled or permission not granted: " + err.message);
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+        }
+    """ if is_teacher else ""
+
+    html_code = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="utf-8">
+        <script src="https://{domain_clean}/external_api.js"></script>
         <style>
-            .recorder-container {
-                background: linear-gradient(135deg, #1e293b, #0f172a);
-                border: 1px solid #334155;
-                border-radius: 10px;
-                padding: 14px 18px;
-                color: #f8fafc;
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                flex-wrap: wrap;
-                gap: 12px;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                margin-top: 12px;
-            }
-            .rec-left {
-                display: flex;
-                align-items: center;
-                gap: 10px;
-            }
-            .pulse-dot {
-                width: 12px;
-                height: 12px;
-                border-radius: 50%;
-                background-color: #64748b;
-            }
-            .pulse-dot.recording {
-                background-color: #ef4444;
-                box-shadow: 0 0 10px #ef4444;
-                animation: blink 1s infinite;
-            }
-            @keyframes blink { 50% { opacity: 0.3; } }
-            .timer {
-                font-family: monospace;
-                font-size: 1.2rem;
-                font-weight: bold;
-                color: #38bdf8;
-            }
-            .btn-start {
-                background-color: #ef4444;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 6px;
-                font-weight: 600;
-                cursor: pointer;
-            }
-            .btn-start:hover { background-color: #dc2626; }
-            .btn-stop {
-                background-color: #10b981;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 6px;
-                font-weight: 600;
-                cursor: pointer;
-            }
-            .btn-stop:hover { background-color: #059669; }
-            .note {
-                font-size: 0.82rem;
-                color: #94a3b8;
+            * {{ box-sizing: border-box; }}
+            body, html {{
+                margin: 0;
+                padding: 0;
                 width: 100%;
-            }
+                height: 100%;
+                background: #0f172a;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                overflow: hidden;
+            }}
+            #classroom-wrapper {{
+                width: 100%;
+                height: 100%;
+                display: flex;
+                flex-direction: column;
+                background: #0f172a;
+                border-radius: 12px;
+                overflow: hidden;
+                border: 1px solid #334155;
+            }}
+            .classroom-topbar {{
+                background: #1e293b;
+                padding: 10px 16px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                border-bottom: 1px solid #334155;
+            }}
+            .fs-btn {{
+                background: #334155;
+                color: #f8fafc;
+                border: 1px solid #475569;
+                padding: 6px 14px;
+                border-radius: 6px;
+                font-size: 0.85rem;
+                font-weight: 600;
+                cursor: pointer;
+                transition: 0.2s;
+            }}
+            .fs-btn:hover {{ background: #475569; }}
+            #jitsi-container {{
+                flex: 1;
+                width: 100%;
+                height: 620px;
+                background: #111827;
+            }}
+            #jitsi-container iframe {{
+                width: 100% !important;
+                height: 100% !important;
+                border: none !important;
+            }}
         </style>
     </head>
     <body>
-        <div class="recorder-container">
-            <div class="rec-left">
-                <span id="dot" class="pulse-dot"></span>
-                <span id="label" style="font-weight: 600;">Screen & Audio Recorder: Standby</span>
-                <span id="timer" class="timer">00:00:00</span>
+        <div id="classroom-wrapper">
+            <div class="classroom-topbar">
+                <button class="fs-btn" onclick="toggleFullScreen()">⛶ Toggle Full Screen (In-App)</button>
+                {topbar_right}
             </div>
-            <div>
-                <button id="startBtn" class="btn-start" onclick="startRec()">⏺️ Start Screen & Audio Recording</button>
-                <button id="stopBtn" class="btn-stop" onclick="stopRec()" style="display: none;">💾 Stop & Download Video</button>
-            </div>
-            <div class="note">
-                💡 <b>1-Click Class Recording:</b> Click Start, select your Live Class tab/screen with audio checked. When stopped, your class recording automatically downloads directly to your PC as a <code>.webm</code> file.
-            </div>
+            <div id="jitsi-container"></div>
         </div>
 
         <script>
-            let mediaRecorder;
-            let chunks = [];
-            let timerTimer;
-            let secCount = 0;
+            function toggleFullScreen() {{
+                const el = document.getElementById('classroom-wrapper');
+                if (!document.fullscreenElement && !document.webkitFullscreenElement) {{
+                    if (el.requestFullscreen) {{
+                        el.requestFullscreen();
+                    }} else if (el.webkitRequestFullscreen) {{
+                        el.webkitRequestFullscreen();
+                    }}
+                }} else {{
+                    if (document.exitFullscreen) {{
+                        document.exitFullscreen();
+                    }} else if (document.webkitExitFullscreen) {{
+                        document.webkitExitFullscreen();
+                    }}
+                }}
+            }}
 
-            function fmt(s) {
-                const h = String(Math.floor(s / 3600)).padStart(2, '0');
-                const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
-                const sc = String(s % 60).padStart(2, '0');
-                return `${h}:${m}:${sc}`;
-            }
+            {recorder_script}
 
-            async function startRec() {
-                try {
-                    const stream = await navigator.mediaDevices.getDisplayMedia({
-                        video: { cursor: "always" },
-                        audio: true
-                    });
-
-                    chunks = [];
-                    mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
-
-                    mediaRecorder.ondataavailable = (e) => {
-                        if (e.data.size > 0) chunks.push(e.data);
-                    };
-
-                    mediaRecorder.onstop = () => {
-                        clearInterval(timerTimer);
-                        document.getElementById('timer').innerText = "00:00:00";
-                        document.getElementById('dot').classList.remove('recording');
-                        document.getElementById('label').innerText = "Recording Saved & Downloaded!";
-                        document.getElementById('startBtn').style.display = "inline-block";
-                        document.getElementById('stopBtn').style.display = "none";
-
-                        const blob = new Blob(chunks, { type: 'video/webm' });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.style.display = 'none';
-                        a.href = url;
-                        const d = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-                        a.download = `Sisters_Academy_Class_${d}.webm`;
-                        document.body.appendChild(a);
-                        a.click();
-                        setTimeout(() => {
-                            document.body.removeChild(a);
-                            window.URL.revokeObjectURL(url);
-                        }, 100);
-                    };
-
-                    stream.getVideoTracks()[0].onended = () => {
-                        if (mediaRecorder.state !== 'inactive') mediaRecorder.stop();
-                    };
-
-                    mediaRecorder.start(1000);
-                    document.getElementById('startBtn').style.display = "none";
-                    document.getElementById('stopBtn').style.display = "inline-block";
-                    document.getElementById('dot').classList.add('recording');
-                    document.getElementById('label').innerText = "Recording Live Class in Progress...";
-
-                    secCount = 0;
-                    timerTimer = setInterval(() => {
-                        secCount++;
-                        document.getElementById('timer').innerText = fmt(secCount);
-                    }, 1000);
-
-                } catch (err) {
-                    alert("Recording request cancelled or permission not granted: " + err.message);
-                }
-            }
-
-            function stopRec() {
-                if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                    mediaRecorder.stop();
-                }
-            }
+            window.onload = function() {{
+                try {{
+                    const domain = "{domain_clean}";
+                    const options = {{
+                        roomName: "{room_name}",
+                        width: "100%",
+                        height: "100%",
+                        parentNode: document.querySelector('#jitsi-container'),
+                        userInfo: {{
+                            displayName: "{display_name}"
+                        }},
+                        configOverwrite: {{
+                            prejoinPageEnabled: false,
+                            startWithVideoMuted: true,
+                            startWithAudioMuted: {'false' if is_teacher else 'true'},
+                            disableDeepLinking: true,
+                            toolbarButtons: {tb_buttons}
+                        }},
+                        interfaceConfigOverwrite: {{
+                            SHOW_JITSI_WATERMARK: false,
+                            SHOW_WATERMARK_FOR_GUESTS: false,
+                            TOOLBAR_ALWAYS_VISIBLE: true
+                        }}
+                    }};
+                    const api = new JitsiMeetExternalAPI(domain, options);
+                    
+                    // Ensure iframe permissions are set
+                    setTimeout(() => {{
+                        const iframe = document.querySelector('#jitsi-container iframe');
+                        if (iframe) {{
+                            iframe.setAttribute('allow', 'camera; microphone; display-capture; fullscreen; autoplay; clipboard-write');
+                        }}
+                    }}, 400);
+                }} catch (e) {{
+                    console.error("Jitsi init error:", e);
+                    document.getElementById('jitsi-container').innerHTML = 
+                        '<div style="color:#ef4444; padding:40px; text-align:center;">Failed to connect to video room. Please change server in sidebar.</div>';
+                }}
+            }};
         </script>
     </body>
     </html>
     """
-    components.html(recorder_code, height=125, scrolling=False)
+    components.html(html_code, height=680, scrolling=False)
+
 
 
 # ==========================================
@@ -745,8 +799,9 @@ def render_teacher_dashboard():
                 with st.form("start_class_form"):
                     st.write("<b>Configure Session</b>", unsafe_allow_html=True)
                     f_topic = st.text_input("Topic", value=session_topic or "Mathematics & Science Coaching")
-                    f_server = st.selectbox("Jitsi Server (Free & Login-Free)", ["meet.ffmuc.net", "jitsi.riot.im", "framatalk.org"], index=0)
+                    f_server = st.selectbox("Jitsi Server (Embed-Friendly)", ["jitsi.riot.im", "meet.jit.si", "framatalk.org"], index=0)
                     f_room = st.text_input("Room Key", value=room_name or "SistersLiveClass_MasterRoom")
+
                     f_notes = st.text_input("Note for Students", value="Camera is OFF by default. Unmute mic to ask doubts.")
                     btn_start = st.form_submit_button("🚀 Start Live Broadcast", type="primary", use_container_width=True)
 
@@ -788,19 +843,16 @@ def render_teacher_dashboard():
         st.markdown("---")
 
         if is_live:
-            teacher_jitsi_url = build_jitsi_url(server, room_name, f"{st.session_state.name} (Teacher)", is_teacher=True)
-
-            st.link_button(
-                "🚀 Open Live Class in Full Screen Tab (Best for Screen Share & Recording)",
-                teacher_jitsi_url,
-                type="primary",
-                use_container_width=True
+            # Active in-app classroom embed with fullscreen and screen recorder buttons
+            render_jitsi_classroom(
+                domain=server,
+                room_name=room_name,
+                display_name=f"{st.session_state.name} (Teacher)",
+                is_teacher=True
             )
-
-            render_jitsi_embed(teacher_jitsi_url)
-            render_html5_recorder()
         else:
             st.info("💡 To begin teaching, configure your topic and click **'Start Live Broadcast'** above.")
+
 
     # ---------------------------------------------
     # TEACHER TAB 2: RECORDED CLASSES (GOOGLE DRIVE)
@@ -1311,14 +1363,14 @@ def render_student_dashboard():
             else:
                 st.success("✅ Attendance recorded! You are in the live room.")
 
-                st.link_button(
-                    "🚀 Open Live Class in Full Screen Tab (Best for Clean Audio/Video)",
-                    student_jitsi_url,
-                    type="primary",
-                    use_container_width=True
+                # Active in-app classroom embed with fullscreen button (no external redirects)
+                render_jitsi_classroom(
+                    domain=server,
+                    room_name=room_name,
+                    display_name=f"{st.session_state.name} (Student)",
+                    is_teacher=False
                 )
 
-                render_jitsi_embed(student_jitsi_url)
 
                 with st.form("leave_live_form"):
                     if st.form_submit_button("Leave Live Room"):
@@ -1525,7 +1577,21 @@ def main():
             else:
                 st.caption("Storage: **Local SQLite (classroom.db)**")
 
-        st.caption(f"Jitsi Server: **{st.session_state.jitsi_server}**")
+        # Server Selector
+        server_options = ["jitsi.riot.im", "meet.jit.si", "framatalk.org"]
+        curr_srv = st.session_state.jitsi_server if st.session_state.jitsi_server in server_options else "jitsi.riot.im"
+        sel_srv = st.selectbox(
+            "🌐 Video Server Selector",
+            server_options,
+            index=server_options.index(curr_srv),
+            help="Select embed-friendly server if one is congested."
+        )
+        if sel_srv != st.session_state.jitsi_server:
+            st.session_state.jitsi_server = sel_srv
+            st.rerun()
+
+        st.caption(f"Active Server: **{st.session_state.jitsi_server}**")
+
 
         st.markdown("---")
         with st.form("logout_form"):
