@@ -5,3 +5,12 @@ __pycache__/
 *.mp4
 uploaded_recordings/
 .streamlit/secrets.toml
+
+# Android build outputs
+android_app/.gradle/
+android_app/build/
+android_app/*/build/
+android_app/*.iml
+android_app/*/*.iml
+android_app/local.properties
+android_app/.idea/
