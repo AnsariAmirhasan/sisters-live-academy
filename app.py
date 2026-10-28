@@ -2212,10 +2212,21 @@ def render_admin_dashboard():
 
         if supabase_on:
             st.success("🟢 Supabase Cloud Storage is fully CONNECTED and ACTIVE!")
-        else:
-            st.warning("🟡 Supabase credentials not found or database tables not yet initialized.")
             if url_cfg:
-                st.info(f"Target Project URL: `{url_cfg}`")
+                st.write(f"**Connected Supabase Project URL:** `{url_cfg}`")
+        else:
+            st.warning("🟡 Currently using local SQLite database. To enable permanent Cloud storage across all device restarts:")
+            st.markdown("1. Open your Supabase SQL Editor:")
+            st.link_button("👉 Open Supabase SQL Editor", "https://supabase.com/dashboard/project/qxfuebpmspwixaylddby/sql/new", type="primary")
+            st.markdown("2. Copy the SQL script below, paste it into the editor, and click **RUN**:")
+            try:
+                with open("supabase_schema.sql", "r") as f:
+                    sql_content = f.read()
+            except Exception:
+                sql_content = "-- Run supabase_schema.sql from your repository"
+
+            st.code(sql_content, language="sql")
+            st.info("Once you click RUN in Supabase, refresh this page. Cloud Storage will automatically turn GREEN!")
 
     try:
         conn.close()
@@ -2254,20 +2265,19 @@ def render_teacher_dashboard():
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
             <div>
                 <h1>👩‍🏫 Teacher Control Center</h1>
-                <p>Welcome, <b>{st.session_state.name}</b> | Server: <code>{server}</code> | Room: <code>{room_name}</code></p>
+                <p>Welcome, <b>{st.session_state.name}</b> | Urdu & Arabic Live Coaching Portal</p>
             </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    tab_live, tab_recordings, tab_fees, tab_notices, tab_doubts, tab_students, tab_cloud = st.tabs([
+    tab_live, tab_recordings, tab_fees, tab_notices, tab_doubts, tab_students = st.tabs([
         "🔴 Live Studio & Screen Share",
         "📚 Recorded Classes (Google Drive)",
         "💳 Student Fees & Invoices",
         "📢 Notice Board",
         "❓ Doubt Box & Chat",
-        "👥 Attendance & Student Accounts",
-        "☁️ Supabase Cloud Setup"
+        "👥 Attendance & Student Accounts"
     ])
 
     # ---------------------------------------------
@@ -2837,36 +2847,6 @@ def render_teacher_dashboard():
                                     st.success("Student removed.")
                                     st.rerun()
 
-    # ---------------------------------------------
-    # TEACHER TAB 6: SUPABASE CLOUD STATUS
-    # ---------------------------------------------
-    with tab_cloud:
-        st.subheader("☁️ Supabase Cloud Storage Status")
-        supabase_on = is_supabase_active()
-        url_cfg, key_cfg = get_supabase_config()
-
-        if supabase_on:
-            st.success("🎉 Supabase Cloud Database is CONNECTED & ACTIVE! All students, attendance, doubts, and recordings are permanently saved in the cloud.")
-            st.write(f"**Connected Supabase Project URL:** `{url_cfg}`")
-        else:
-            st.warning("⚠️ Currently using local SQLite database. To enable permanent Cloud storage across all device restarts:")
-            st.markdown("""
-            1. Open your Supabase SQL Editor:
-            """)
-            st.link_button("👉 Open Supabase SQL Editor", "https://supabase.com/dashboard/project/qxfuebpmspwixaylddby/sql/new", type="primary")
-            st.markdown("""
-            2. Copy the SQL script below, paste it into the editor, and click **RUN**:
-            """)
-            
-            try:
-                with open("supabase_schema.sql", "r") as f:
-                    sql_content = f.read()
-            except Exception:
-                sql_content = "-- Run supabase_schema.sql from your repository"
-
-            st.code(sql_content, language="sql")
-            st.info("Once you click RUN in Supabase, refresh this page. Cloud Storage will automatically turn GREEN!")
-
     # Close connection cleanly
     try:
         conn.close()
@@ -3381,30 +3361,36 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-        # Storage indicator
-        if is_supabase_active():
-            st.success("🟢 Storage: Supabase Cloud Active")
-        else:
-            url_cfg, _ = get_supabase_config()
-            if url_cfg:
-                st.warning("🟡 Storage: Local SQLite (Run SQL schema to activate Supabase)")
+        # Storage indicator (Admin only)
+        if st.session_state.role == 'admin':
+            if is_supabase_active():
+                st.success("🟢 Storage: Supabase Cloud Active")
             else:
-                st.caption("Storage: **Local SQLite (classroom.db)**")
+                url_cfg, _ = get_supabase_config()
+                if url_cfg:
+                    st.warning("🟡 Storage: Local SQLite (Run SQL schema to activate Supabase)")
+                else:
+                    st.caption("Storage: **Local SQLite (classroom.db)**")
 
-        # Server Selector
+        # Server Selector (Default background is jitsi.riot.im; only exposed to Admin in collapsed expander)
         server_options = ["jitsi.riot.im", "meet.jit.si", "framatalk.org"]
-        curr_srv = st.session_state.jitsi_server if st.session_state.jitsi_server in server_options else "jitsi.riot.im"
-        sel_srv = st.selectbox(
-            "🌐 Video Server Selector",
-            server_options,
-            index=server_options.index(curr_srv),
-            help="Select embed-friendly server if one is congested."
-        )
-        if sel_srv != st.session_state.jitsi_server:
-            st.session_state.jitsi_server = sel_srv
-            st.rerun()
+        if st.session_state.jitsi_server not in server_options:
+            st.session_state.jitsi_server = "jitsi.riot.im"
 
-        st.caption(f"Active Server: **{st.session_state.jitsi_server}**")
+        if st.session_state.role == 'admin':
+            with st.sidebar.expander("⚙️ Advanced Video Server Settings", expanded=False):
+                curr_srv = st.session_state.jitsi_server
+                sel_srv = st.selectbox(
+                    "🌐 Video Server Selector",
+                    server_options,
+                    index=server_options.index(curr_srv),
+                    help="Select embed-friendly server if one is congested.",
+                    key="admin_sidebar_video_server"
+                )
+                if sel_srv != st.session_state.jitsi_server:
+                    st.session_state.jitsi_server = sel_srv
+                    st.rerun()
+                st.caption(f"Active Server: **{st.session_state.jitsi_server}**")
 
 
         st.markdown("---")
