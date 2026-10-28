@@ -150,6 +150,19 @@ CREATE TABLE IF NOT EXISTS public.scheduled_classes (
     allow_waiting_room INTEGER DEFAULT 1
 );
 
+-- 9. Payment Settings Table (Editable UPI, Number & Instructions)
+CREATE TABLE IF NOT EXISTS public.payment_settings (
+    id BIGSERIAL PRIMARY KEY,
+    upi_id TEXT DEFAULT '',
+    payment_number TEXT DEFAULT '',
+    account_holder_name TEXT DEFAULT '',
+    custom_instructions TEXT DEFAULT ''
+);
+
+INSERT INTO public.payment_settings (id, upi_id, payment_number, account_holder_name, custom_instructions)
+VALUES (1, '', '', '', 'Please share payment screenshot with your teacher after completing the transfer.')
+ON CONFLICT (id) DO NOTHING;
+
 -- Enable Row Level Security (RLS) with open policy for service_role and authenticated users
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.class_session ENABLE ROW LEVEL SECURITY;
@@ -159,6 +172,7 @@ ALTER TABLE public.announcements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.doubts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.fees ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.scheduled_classes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payment_settings ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Allow all operations on users" ON public.users FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all operations on class_session" ON public.class_session FOR ALL USING (true) WITH CHECK (true);
@@ -168,3 +182,4 @@ CREATE POLICY "Allow all operations on announcements" ON public.announcements FO
 CREATE POLICY "Allow all operations on doubts" ON public.doubts FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all operations on fees" ON public.fees FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all operations on scheduled_classes" ON public.scheduled_classes FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all operations on payment_settings" ON public.payment_settings FOR ALL USING (true) WITH CHECK (true);

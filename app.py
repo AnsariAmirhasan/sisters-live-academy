@@ -454,6 +454,26 @@ def init_database():
     except Exception:
         pass
 
+    # 8.5. Payment Settings Table (Editable UPI, GPay number & instructions)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS payment_settings (
+        id INTEGER PRIMARY KEY,
+        upi_id TEXT DEFAULT '',
+        payment_number TEXT DEFAULT '',
+        account_holder_name TEXT DEFAULT '',
+        custom_instructions TEXT DEFAULT ''
+    )
+    """)
+    try:
+        c.execute("SELECT COUNT(*) as cnt FROM payment_settings WHERE id = 1")
+        if c.fetchone()['cnt'] == 0:
+            c.execute("""
+            INSERT INTO payment_settings (id, upi_id, payment_number, account_holder_name, custom_instructions)
+            VALUES (1, '', '', '', 'Please share your payment reference screenshot with the Teacher after paying.')
+            """)
+    except Exception:
+        pass
+
     # ---------------------------------------------
     # 9. ENFORCE 3-TIER DEFAULT ACCOUNTS
     # ---------------------------------------------
@@ -529,22 +549,12 @@ def init_database():
                 ?, ?, ?, ?)
         """, (demo_drive_url, embed_url, dl_url, now_str))
 
-    # Seed initial demo fees if empty
-    c.execute("SELECT COUNT(*) as cnt FROM fees")
-    if c.fetchone()['cnt'] == 0:
-        c.execute("""
-        INSERT INTO fees (student_username, student_name, month_title, amount, due_date, status, paid_date, marked_by, note)
-        VALUES 
-            ('student1', 'Student 1', 'October 2026 Tuition', '1500', '2026-10-10', 'Paid', '2026-10-05', 'Lead Teacher', 'Paid via UPI ref #98721'),
-            ('student2', 'Student 2', 'October 2026 Tuition', '1500', '2026-10-10', 'Pending', '-', '-', 'Dues reminder sent'),
-            ('student3', 'Student 3', 'October 2026 Tuition', '1500', '2026-10-10', 'Paid', '2026-10-08', 'Teacher 1', 'Paid in Cash')
-        """)
-
-    # One-time cleanup of legacy demo Math/Physics entries
+    # One-time cleanup of legacy demo Math/Physics entries & fake seeded fees
     try:
         c.execute("DELETE FROM scheduled_classes WHERE topic LIKE '%Trigonometry%' OR topic LIKE '%Electromagnetism%' OR subject LIKE '%Mathematics%' OR subject LIKE '%Physics%'")
         c.execute("UPDATE class_session SET topic = 'Urdu & Arabic Live Class' WHERE topic LIKE '%Mathematics%' OR topic LIKE '%Science%'")
         c.execute("UPDATE recordings SET subject = 'Urdu / Arabic', title = 'Urdu & Arabic Foundation Class 01' WHERE title LIKE '%Foundation & Orientation Class 01%'")
+        c.execute("DELETE FROM fees WHERE note LIKE '%#98721%' OR marked_by = 'Lead Teacher' OR month_title LIKE '%October 2026%' OR note LIKE '%Dues reminder sent%' OR note LIKE '%Paid in Cash%'")
     except Exception as e:
         print(f"Cleanup error: {e}")
 
@@ -567,6 +577,57 @@ init_db = init_database
 
 # Run DB initialization once
 init_database()
+
+def get_payment_settings():
+    """Fetches payment settings (UPI, Number, Instructions) from Supabase or SQLite"""
+    if is_supabase_active():
+        ok, rows = supabase_request("GET", "payment_settings", params="id=eq.1&select=*")
+        if ok and rows:
+            return rows[0]
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("SELECT * FROM payment_settings WHERE id = 1")
+            row = c.fetchone()
+            if row:
+                return dict(row)
+    except Exception as e:
+        print(f"Error fetching payment settings: {e}")
+    return {
+        "id": 1,
+        "upi_id": "",
+        "payment_number": "",
+        "account_holder_name": "",
+        "custom_instructions": ""
+    }
+
+def update_payment_settings(upi_id: str, payment_number: str, account_holder_name: str, custom_instructions: str):
+    """Updates payment settings in SQLite and Supabase"""
+    try:
+        with get_db_connection() as conn:
+            conn.execute("""
+            INSERT INTO payment_settings (id, upi_id, payment_number, account_holder_name, custom_instructions)
+            VALUES (1, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                upi_id = excluded.upi_id,
+                payment_number = excluded.payment_number,
+                account_holder_name = excluded.account_holder_name,
+                custom_instructions = excluded.custom_instructions
+            """, (upi_id.strip(), payment_number.strip(), account_holder_name.strip(), custom_instructions.strip()))
+            conn.commit()
+    except Exception as e:
+        print(f"Error updating payment settings locally: {e}")
+        return False, str(e)
+
+    if is_supabase_active():
+        supabase_request("POST", "payment_settings", {
+            "id": 1,
+            "upi_id": upi_id.strip(),
+            "payment_number": payment_number.strip(),
+            "account_holder_name": account_holder_name.strip(),
+            "custom_instructions": custom_instructions.strip()
+        })
+    return True, "Payment settings saved successfully!"
 
 
 # ==========================================
@@ -1081,6 +1142,28 @@ def render_fees_management(is_admin: bool = True):
 
     st.markdown("---")
 
+    # Editable Payment Instructions & UPI Settings for Teachers & Admins
+    with st.expander("⚙️ Payment Instructions & UPI Settings (Visible to Students)", expanded=False):
+        st.markdown("Configure the official UPI ID, mobile payment number, and instructions displayed on every student's fee payment portal:")
+        pay_cfg = get_payment_settings()
+        with st.form(f"payment_settings_form_{'adm' if is_admin else 'tch'}"):
+            c_ps1, c_ps2 = st.columns(2)
+            with c_ps1:
+                p_upi = st.text_input("UPI ID", value=pay_cfg.get('upi_id', ''), placeholder="e.g. yourname@okaxis or sisterfatima@upi")
+                p_num = st.text_input("GPay / PhonePe / Paytm Mobile Number", value=pay_cfg.get('payment_number', ''), placeholder="e.g. 98XXXXXXXX")
+            with c_ps2:
+                p_name = st.text_input("Beneficiary / Account Holder Name", value=pay_cfg.get('account_holder_name', ''), placeholder="e.g. Sister Fatima")
+                p_inst = st.text_area("Custom Instructions / Notes for Students", value=pay_cfg.get('custom_instructions', ''), placeholder="e.g. Please share payment screenshot on WhatsApp after paying.")
+
+            btn_save_pay = st.form_submit_button("💾 Save Payment Settings", type="primary", use_container_width=True)
+            if btn_save_pay:
+                ok, msg = update_payment_settings(p_upi, p_num, p_name, p_inst)
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(f"Error: {msg}")
+
     col_f1, col_f2 = st.columns([1.3, 1.7])
 
     with col_f1:
@@ -1099,9 +1182,9 @@ def render_fees_management(is_admin: bool = True):
 
             default_month = datetime.date.today().strftime("%B %Y") + " Monthly Tuition"
             f_month = st.text_input("Month / Invoice Title", value=default_month, placeholder="e.g. November 2026 Tuition")
-            f_amt = st.text_input("Fee Amount (₹)", value="1500", placeholder="e.g. 1500")
+            f_amt = st.text_input("Fee Amount (₹)", value="", placeholder="e.g. 1000 or 1500")
             f_due = st.date_input("Due Date", value=datetime.date.today() + datetime.timedelta(days=10))
-            f_note = st.text_input("Instructions / Payment Note", value="Pay via UPI or Cash to Academy Office", placeholder="e.g. UPI to academy@upi")
+            f_note = st.text_input("Instructions / Payment Note", value="Pay via UPI or direct transfer", placeholder="e.g. Send screenshot on WhatsApp")
 
             btn_issue = st.form_submit_button("🚀 Issue Fee Invoice", type="primary", use_container_width=True)
 
@@ -1367,19 +1450,42 @@ def render_student_fees_portal():
 
     with col_p2:
         st.markdown("### 💳 How to Pay Your Tuition Fees")
-        st.markdown("""
-        <div class="glass-card" style="padding:18px;">
-            <h4 style="margin-top:0; color:#1e293b;">📌 Payment Instructions</h4>
-            <ul style="color:#475569; font-size:0.9rem; padding-left:18px; margin-bottom:12px;">
-                <li><b>UPI ID:</b> <code>sistersacademy@upi</code></li>
-                <li><b>Google Pay / PhonePe / Paytm:</b> Scan the Academy QR Code at the office or send to <code>9876543210</code></li>
-                <li><b>Cash Payment:</b> Pay in person at the Academy Reception Desk.</li>
-            </ul>
-            <div style="background:#e0f2fe; border-left:4px solid #0284c7; padding:10px; border-radius:6px; font-size:0.85rem; color:#0369a1;">
-                ℹ️ <b>Important:</b> After completing your UPI payment, share your payment reference number / screenshot with your Teacher or Administrator to have your fee receipt marked as <b>Paid</b>.
+        pay_cfg = get_payment_settings()
+        has_upi = bool(pay_cfg.get('upi_id', '').strip())
+        has_num = bool(pay_cfg.get('payment_number', '').strip())
+        has_name = bool(pay_cfg.get('account_holder_name', '').strip())
+        custom_inst = pay_cfg.get('custom_instructions', '').strip()
+
+        if not has_upi and not has_num and not custom_inst:
+            st.markdown("""
+            <div class="glass-card" style="padding:18px;">
+                <h4 style="margin-top:0; color:#1e293b;">📌 Payment Instructions</h4>
+                <p style="color:#64748b; font-size:0.9rem; margin-bottom:0;">
+                    Payment details have not been configured yet. Please contact your Teacher or Academy Administrator directly for fee payment instructions.
+                </p>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
+        else:
+            upi_li = f"<li><b>UPI ID:</b> <code>{pay_cfg['upi_id']}</code></li>" if has_upi else ""
+            num_li = f"<li><b>Google Pay / PhonePe / Paytm:</b> Send to <code>{pay_cfg['payment_number']}</code></li>" if has_num else ""
+            name_li = f"<li><b>Account / Beneficiary Name:</b> <b>{pay_cfg['account_holder_name']}</b></li>" if has_name else ""
+            notes_div = f"""
+            <div style="background:#e0f2fe; border-left:4px solid #0284c7; padding:10px; border-radius:6px; font-size:0.85rem; color:#0369a1; margin-top:12px;">
+                ℹ️ <b>Important:</b> {custom_inst}
+            </div>
+            """ if custom_inst else ""
+
+            st.markdown(f"""
+            <div class="glass-card" style="padding:18px;">
+                <h4 style="margin-top:0; color:#1e293b;">📌 Payment Instructions</h4>
+                <ul style="color:#475569; font-size:0.9rem; padding-left:18px; margin-bottom:12px;">
+                    {upi_li}
+                    {num_li}
+                    {name_li}
+                </ul>
+                {notes_div}
+            </div>
+            """, unsafe_allow_html=True)
 
 
 # ==========================================
