@@ -3,4 +3,5 @@ __pycache__/
 .DS_Store
 *.webm
 *.mp4
+uploaded_recordings/
 .streamlit/secrets.toml

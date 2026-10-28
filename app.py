@@ -259,6 +259,144 @@ def render_embedded_drive_folder(folder_id: str = DEFAULT_DRIVE_FOLDER_ID, folde
 
     components.iframe(embed_url, height=450, scrolling=True)
 
+UPLOAD_DIR = "uploaded_recordings"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+def save_recording_file(file_obj, original_filename: str) -> str:
+    """Saves an uploaded video file locally in uploaded_recordings/ and returns safe relative filename."""
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    clean_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', original_filename)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_filename = f"{timestamp}_{clean_name}"
+    target_path = os.path.join(UPLOAD_DIR, safe_filename)
+    file_obj.seek(0)
+    with open(target_path, "wb") as f:
+        f.write(file_obj.read())
+    file_obj.seek(0)
+    return safe_filename
+
+def process_and_save_recording(uploaded_file, title: str, subject: str, notes: str = "") -> tuple[bool, str, bool, str]:
+    """
+    Saves recording locally on disk first (guaranteed 100% working without any external APIs),
+    then attempts optional Google Drive sync if service account credentials exist in st.secrets.
+    Inserts a row into recordings SQLite table and syncs with Supabase.
+    Returns (success: bool, safe_filename: str, gdrive_synced: bool, final_link: str).
+    """
+    safe_fn = save_recording_file(uploaded_file, uploaded_file.name)
+    local_uri = f"local://{safe_fn}"
+    final_drive_link = local_uri
+    final_embed_url = local_uri
+    final_download_url = local_uri
+    gdrive_synced = False
+
+    # Optional Google Drive sync if service account is configured
+    try:
+        ok_drive, g_link, _ = upload_file_to_google_drive(uploaded_file, safe_fn, DEFAULT_DRIVE_FOLDER_ID)
+        if ok_drive and g_link:
+            final_drive_link = g_link
+            final_embed_url, final_download_url = process_google_drive_link(g_link)
+            gdrive_synced = True
+    except Exception as e:
+        print(f"Optional Google Drive sync skipped: {e}")
+
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    today_str = str(datetime.date.today())
+    desc = notes.strip() if notes.strip() else f"Uploaded class recording ({uploaded_file.name})"
+
+    try:
+        with get_db_connection() as conn_w:
+            conn_w.execute("""
+            INSERT INTO recordings (title, subject, lecture_date, description, drive_link, embed_url, download_url, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (title.strip(), subject.strip(), today_str, desc, final_drive_link, final_embed_url, final_download_url, now_str))
+            conn_w.commit()
+    except Exception as e:
+        print(f"Error saving recording row: {e}")
+
+    if is_supabase_active():
+        supabase_request("POST", "recordings", {
+            "title": title.strip(),
+            "subject": subject.strip(),
+            "lecture_date": today_str,
+            "description": desc,
+            "drive_link": final_drive_link,
+            "embed_url": final_embed_url,
+            "download_url": final_download_url,
+            "created_at": now_str
+        })
+
+    return True, safe_fn, gdrive_synced, final_drive_link
+
+def render_recording_player(rec: dict, is_student: bool = False, key_suffix: str = ""):
+    """Renders either local video player or embedded Google Drive / YouTube player"""
+    drive_link = rec.get('drive_link') or ''
+    embed_url = rec.get('embed_url') or ''
+    is_local = drive_link.startswith("local://") or embed_url.startswith("local://")
+
+    if is_local:
+        safe_fn = drive_link.replace("local://", "") if drive_link.startswith("local://") else embed_url.replace("local://", "")
+        file_path = os.path.join(UPLOAD_DIR, safe_fn)
+        if os.path.exists(file_path):
+            st.video(file_path)
+            try:
+                with open(file_path, "rb") as vf:
+                    file_bytes = vf.read()
+                st.download_button(
+                    "📥 Direct Download Video",
+                    data=file_bytes,
+                    file_name=safe_fn,
+                    mime="video/webm" if safe_fn.endswith(".webm") else "video/mp4",
+                    type="primary" if is_student else "secondary",
+                    use_container_width=True,
+                    key=f"dl_loc_{rec.get('id', 0)}_{key_suffix}"
+                )
+            except Exception as e:
+                print(f"Error reading local video bytes: {e}")
+        else:
+            st.warning(f"⚠️ Video file `{safe_fn}` not found on server storage.")
+    else:
+        if "drive.google.com" in embed_url or "youtube.com" in embed_url:
+            st.markdown(f"""
+            <iframe src="{embed_url}" width="100%" height="340" frameborder="0" allow="autoplay; fullscreen" allowfullscreen style="border-radius:10px; border:1px solid #cbd5e1;"></iframe>
+            """, unsafe_allow_html=True)
+        if is_student:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.link_button("📥 Direct Download Video", rec.get('download_url') or drive_link, type="primary", use_container_width=True)
+            with c2:
+                st.link_button("🔗 Open in Google Drive", drive_link, use_container_width=True)
+        else:
+            dl = rec.get('download_url') or drive_link
+            if dl:
+                st.link_button("📥 Direct Download Link", dl, use_container_width=True)
+
+def render_quick_recording_uploader(key_suffix: str = "main", title: str = "Publish Class Recording Video"):
+    """Reusable widget to upload and publish recordings immediately to all students"""
+    with st.expander(f"☁️ {title}", expanded=False):
+        st.write("Upload a recorded `.webm`, `.mp4`, or `.mkv` file to immediately save and publish it to all Students:")
+        uploaded_file = st.file_uploader(
+            "Select or drop recording video file",
+            type=["webm", "mp4", "mkv"],
+            key=f"file_up_{key_suffix}"
+        )
+        if uploaded_file is not None:
+            up_col1, up_col2 = st.columns([1.5, 1])
+            with up_col1:
+                up_title = st.text_input("Recording Title", value=uploaded_file.name.rsplit(".", 1)[0], key=f"title_{key_suffix}")
+            with up_col2:
+                up_sub = st.text_input("Subject", value="Urdu / Arabic", placeholder="Type any subject e.g. Urdu, Arabic, Tajweed, Grammar...", key=f"sub_{key_suffix}")
+            up_notes = st.text_input("Notes / Summary (Optional)", placeholder="e.g. Chapter 1 exercises, grammar rules", key=f"notes_{key_suffix}")
+
+            if st.button("🚀 Upload & Publish Recording to Students", type="primary", use_container_width=True, key=f"btn_save_{key_suffix}"):
+                with st.spinner("Saving recording locally and publishing to students..."):
+                    ok, safe_fn, gdrive_synced, drive_link = process_and_save_recording(uploaded_file, up_title, up_sub, up_notes)
+                    if ok:
+                        if gdrive_synced:
+                            st.success(f"✅ Recording published locally & synced to Google Drive folder! ({safe_fn})")
+                        else:
+                            st.success(f"✅ Recording uploaded and published to all students successfully! ({safe_fn})")
+                        st.rerun()
+
 def init_database():
     """Initializes SQLite schema and ensures columns exist"""
     conn = get_db()
@@ -797,44 +935,45 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
 
 
     topbar_right = """
-        <div style="display:flex; align-items:center; gap:8px;">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
             <span id="rec-dot" style="width:10px; height:10px; border-radius:50%; background:#64748b; display:inline-block;"></span>
             <span id="rec-timer" style="font-family:monospace; color:#38bdf8; font-weight:bold; font-size:0.95rem;">00:00:00</span>
             <button id="start-rec-btn" onclick="startRecording()" style="background:#ef4444; color:white; border:none; padding:6px 14px; border-radius:6px; font-size:0.85rem; font-weight:600; cursor:pointer;">⏺️ Record Screen & Voice</button>
-            <button id="stop-rec-btn" onclick="stopRecording()" style="display:none; background:#10b981; color:white; border:none; padding:6px 14px; border-radius:6px; font-size:0.85rem; font-weight:600; cursor:pointer;">💾 Stop & Download Video</button>
+            <button id="stop-rec-btn" onclick="stopRecording()" style="display:none; background:#10b981; color:white; border:none; padding:6px 14px; border-radius:6px; font-size:0.85rem; font-weight:600; cursor:pointer;">💾 Stop & Save File</button>
+            <span id="rec-saved-banner" style="display:none; background:#059669; color:white; padding:4px 10px; border-radius:6px; font-size:0.8rem; font-weight:600;">✅ Recording Saved! Drop below to publish.</span>
         </div>
     """ if is_teacher else """
         <span style="color:#94a3b8; font-size:0.85rem; font-weight:500;">🎥 Live Audio/Video Stream Active</span>
     """
 
-    recorder_script = """
+    recorder_script = f"""
         let mediaRecorder;
         let recordedChunks = [];
         let timerInterval;
         let recSeconds = 0;
 
-        function formatTimer(s) {
+        function formatTimer(s) {{
             const h = String(Math.floor(s / 3600)).padStart(2, '0');
             const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
             const sc = String(s % 60).padStart(2, '0');
-            return `${h}:${m}:${sc}`;
-        }
+            return `${{h}}:${{m}}:${{sc}}`;
+        }}
 
-        async function startRecording() {
-            try {
-                const stream = await navigator.mediaDevices.getDisplayMedia({
-                    video: { cursor: "always" },
+        async function startRecording() {{
+            try {{
+                const stream = await navigator.mediaDevices.getDisplayMedia({{
+                    video: {{ cursor: "always" }},
                     audio: true
-                });
+                }});
 
                 recordedChunks = [];
-                mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+                mediaRecorder = new MediaRecorder(stream, {{ mimeType: 'video/webm' }});
 
-                mediaRecorder.ondataavailable = (e) => {
+                mediaRecorder.ondataavailable = (e) => {{
                     if (e.data.size > 0) recordedChunks.push(e.data);
-                };
+                }};
 
-                mediaRecorder.onstop = () => {
+                mediaRecorder.onstop = () => {{
                     clearInterval(timerInterval);
                     document.getElementById('rec-timer').innerText = "00:00:00";
                     document.getElementById('rec-dot').style.background = "#64748b";
@@ -842,24 +981,30 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                     document.getElementById('start-rec-btn').style.display = "inline-block";
                     document.getElementById('stop-rec-btn').style.display = "none";
 
-                    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                    const blob = new Blob(recordedChunks, {{ type: 'video/webm' }});
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.style.display = 'none';
                     a.href = url;
                     const d = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-                    a.download = `Sisters_Academy_Class_${d}.webm`;
+                    a.download = `Sisters_Academy_Class_${{d}}.webm`;
                     document.body.appendChild(a);
                     a.click();
-                    setTimeout(() => {
+                    setTimeout(() => {{
                         document.body.removeChild(a);
                         window.URL.revokeObjectURL(url);
-                    }, 100);
-                };
+                    }}, 100);
 
-                stream.getVideoTracks()[0].onended = () => {
+                    const banner = document.getElementById('rec-saved-banner');
+                    if (banner) banner.style.display = 'inline-block';
+                    try {{
+                        window.open("{DEFAULT_DRIVE_FOLDER_URL}", "_blank");
+                    }} catch(e) {{}}
+                }};
+
+                stream.getVideoTracks()[0].onended = () => {{
                     if (mediaRecorder.state !== 'inactive') mediaRecorder.stop();
-                };
+                }};
 
                 mediaRecorder.start(1000);
                 document.getElementById('start-rec-btn').style.display = "none";
@@ -868,21 +1013,21 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 document.getElementById('rec-dot').style.boxShadow = "0 0 10px #ef4444";
 
                 recSeconds = 0;
-                timerInterval = setInterval(() => {
+                timerInterval = setInterval(() => {{
                     recSeconds++;
                     document.getElementById('rec-timer').innerText = formatTimer(recSeconds);
-                }, 1000);
+                }}, 1000);
 
-            } catch (err) {
+            }} catch (err) {{
                 alert("Recording request cancelled or permission not granted: " + err.message);
-            }
-        }
+            }}
+        }}
 
-        function stopRecording() {
-            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        function stopRecording() {{
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {{
                 mediaRecorder.stop();
-            }
-        }
+            }}
+        }}
     """ if is_teacher else ""
 
     html_code = f"""
@@ -1990,6 +2135,8 @@ def render_admin_dashboard():
             st.info("💡 To begin teaching or broadcasting, configure your topic and click **'Start Live Broadcast'** above.")
 
         st.markdown("---")
+        render_quick_recording_uploader(key_suffix="admin_live_studio", title="1-Click Live Class Recording Publisher")
+        st.markdown("---")
         with st.expander("📅 Class Scheduler & Pre-Class Waiting Lounge Queue", expanded=not is_live):
             render_class_scheduler_widget(is_admin=True)
 
@@ -2014,45 +2161,7 @@ def render_admin_dashboard():
         with col_up_btn2:
             st.info(f"📁 Folder ID: `{DEFAULT_DRIVE_FOLDER_ID}`")
 
-        with st.expander("☁️ Direct Google Drive Video Auto-Uploader (Service Account)", expanded=False):
-            st.write("Upload a recorded `.webm`, `.mp4`, or `.mkv` file directly into your Google Drive folder from here:")
-            uploaded_file = st.file_uploader("Upload Recording Directly to Google Drive Folder", type=["webm", "mp4", "mkv"], key="admin_drive_uploader")
-            if uploaded_file is not None:
-                up_col1, up_col2 = st.columns([1.5, 1])
-                with up_col1:
-                    up_title = st.text_input("Recording Title", value=uploaded_file.name.rsplit(".", 1)[0], key="admin_up_title")
-                with up_col2:
-                    up_sub = st.text_input("Subject", value="Urdu / Arabic", placeholder="Type any subject e.g. Urdu, Arabic, Tajweed, Grammar...", key="admin_up_sub")
-
-                if st.button("🚀 Upload File to Google Drive Folder", type="primary", use_container_width=True, key="btn_admin_up"):
-                    with st.spinner("Uploading video to Google Drive folder..."):
-                        ok, web_link, err_msg = upload_file_to_google_drive(uploaded_file, uploaded_file.name, DEFAULT_DRIVE_FOLDER_ID)
-                        if ok:
-                            embed_url, download_url = process_google_drive_link(web_link)
-                            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            today_str = str(datetime.date.today())
-                            try:
-                                with get_db_connection() as conn_w:
-                                    conn_w.execute("""
-                                    INSERT INTO recordings (title, subject, lecture_date, description, drive_link, embed_url, download_url, created_at)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                    """, (up_title, up_sub, today_str, f"Auto-uploaded: {uploaded_file.name}", web_link, embed_url, download_url, now_str))
-                                    conn_w.commit()
-                            except Exception as e:
-                                print(f"Error saving auto-uploaded recording: {e}")
-
-                            if is_supabase_active():
-                                supabase_request("POST", "recordings", {
-                                    "title": up_title, "subject": up_sub, "lecture_date": today_str,
-                                    "description": f"Auto-uploaded: {uploaded_file.name}", "drive_link": web_link,
-                                    "embed_url": embed_url, "download_url": download_url, "created_at": now_str
-                                })
-
-                            st.success(f"Video uploaded to Google Drive! Link: {web_link}")
-                            st.rerun()
-                        else:
-                            st.warning(f"Notice: {err_msg}")
-                            st.markdown(f"💡 **Quick Alternative:** Click **[📂 Open Class Recordings Drive Folder (Upload Here)]({DEFAULT_DRIVE_FOLDER_URL})** to drag & drop your video directly into the folder.")
+        render_quick_recording_uploader(key_suffix="admin_rec_tab", title="Direct Video Uploader (Local Server + Google Drive Sync)")
 
         st.markdown("---")
         st.markdown("#### 🎬 Spotlight Individual Video Player")
@@ -2111,27 +2220,19 @@ def render_admin_dashboard():
                 for rec in all_recs:
                     with st.expander(f"🎬 {rec['title']} ({rec['subject']} - {rec['lecture_date']})"):
                         st.write(f"**Notes:** {rec.get('description') or 'No notes added.'}")
-                        col_l1, col_l2 = st.columns([1.5, 1])
-                        with col_l1:
-                            st.link_button("📥 Direct Download Link", rec['download_url'], use_container_width=True)
-                        with col_l2:
-                            with st.form(f"del_rec_admin_{rec['id']}"):
-                                if st.form_submit_button("🗑️ Delete Recording", use_container_width=True):
-                                    try:
-                                        with get_db_connection() as conn_w:
-                                            conn_w.execute("DELETE FROM recordings WHERE id = ?", (rec['id'],))
-                                            conn_w.commit()
-                                    except Exception as e:
-                                        print(f"Error deleting recording: {e}")
-                                    if is_supabase_active():
-                                        supabase_request("DELETE", "recordings", params=f"id=eq.{rec['id']}")
-                                    st.success("Deleted recording.")
-                                    st.rerun()
-
-                        if "drive.google.com" in rec['embed_url'] or "youtube.com" in rec['embed_url']:
-                            st.markdown(f"""
-                            <iframe src="{rec['embed_url']}" width="100%" height="320" frameborder="0" allow="autoplay; fullscreen" allowfullscreen style="border-radius:8px; border:1px solid #cbd5e1; margin-top:8px;"></iframe>
-                            """, unsafe_allow_html=True)
+                        render_recording_player(rec, is_student=False, key_suffix=f"adm_rec_{rec['id']}")
+                        with st.form(f"del_rec_admin_{rec['id']}"):
+                            if st.form_submit_button("🗑️ Delete Recording", use_container_width=True):
+                                try:
+                                    with get_db_connection() as conn_w:
+                                        conn_w.execute("DELETE FROM recordings WHERE id = ?", (rec['id'],))
+                                        conn_w.commit()
+                                except Exception as e:
+                                    print(f"Error deleting recording: {e}")
+                                if is_supabase_active():
+                                    supabase_request("DELETE", "recordings", params=f"id=eq.{rec['id']}")
+                                st.success("Deleted recording.")
+                                st.rerun()
 
     # ---------------------------------------------
     # ADMIN TAB 4: NOTICE BOARD
@@ -2499,6 +2600,8 @@ def render_teacher_dashboard():
             st.info("💡 To begin teaching, configure your topic and click **'Start Live Broadcast'** above.")
 
         st.markdown("---")
+        render_quick_recording_uploader(key_suffix="teacher_live_studio", title="1-Click Live Class Recording Publisher")
+        st.markdown("---")
         with st.expander("📅 Class Scheduler & Pre-Class Waiting Lounge Queue", expanded=not is_live):
             render_class_scheduler_widget(is_admin=False)
 
@@ -2526,47 +2629,7 @@ def render_teacher_dashboard():
         with col_up_btn2:
             st.info(f"📁 Folder ID: `{DEFAULT_DRIVE_FOLDER_ID}`")
 
-        with st.expander("☁️ Direct Google Drive Video Auto-Uploader (Service Account)", expanded=False):
-            st.write("Upload a recorded `.webm`, `.mp4`, or `.mkv` file directly into your Google Drive folder from here:")
-            uploaded_file = st.file_uploader("Upload Recording Directly to Google Drive Folder", type=["webm", "mp4", "mkv"], key="teacher_drive_uploader")
-            if uploaded_file is not None:
-                up_col1, up_col2 = st.columns([1.5, 1])
-                with up_col1:
-                    up_title = st.text_input("Recording Title", value=uploaded_file.name.rsplit(".", 1)[0], key="auto_up_title")
-                with up_col2:
-                    up_sub = st.text_input("Subject", value="Urdu / Arabic", placeholder="Type any subject e.g. Urdu, Arabic, Tajweed, Grammar...", key="auto_up_sub")
-
-                if st.button("🚀 Upload File to Google Drive Folder", type="primary", use_container_width=True, key="btn_auto_up"):
-                    with st.spinner("Uploading video to Google Drive folder..."):
-                        ok, web_link, err_msg = upload_file_to_google_drive(uploaded_file, uploaded_file.name, DEFAULT_DRIVE_FOLDER_ID)
-                        if ok:
-                            embed_url, download_url = process_google_drive_link(web_link)
-                            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            today_str = str(datetime.date.today())
-                            try:
-                                with get_db_connection() as conn_w:
-                                    conn_w.execute("""
-                                    INSERT INTO recordings (title, subject, lecture_date, description, drive_link, embed_url, download_url, created_at)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                    """, (up_title, up_sub, today_str, f"Auto-uploaded: {uploaded_file.name}", web_link, embed_url, download_url, now_str))
-                                    conn_w.commit()
-                            except Exception as e:
-                                print(f"Error saving auto-uploaded recording: {e}")
-
-                            if is_supabase_active():
-                                supabase_request("POST", "recordings", {
-                                    "title": up_title, "subject": up_sub, "lecture_date": today_str,
-                                    "description": f"Auto-uploaded: {uploaded_file.name}", "drive_link": web_link,
-                                    "embed_url": embed_url, "download_url": download_url, "created_at": now_str
-                                })
-
-                            st.success(f"Video uploaded to Google Drive! Link: {web_link}")
-                            st.rerun()
-                        else:
-                            st.warning(f"Notice: {err_msg}")
-                            st.markdown(f"""
-                            💡 **Quick Alternative:** Click **[📂 Open Class Recordings Drive Folder (Upload Here)]({DEFAULT_DRIVE_FOLDER_URL})** to drag & drop your video directly into the folder. Once uploaded, it instantly appears in the embedded viewer above!
-                            """)
+        render_quick_recording_uploader(key_suffix="teacher_rec_tab", title="Direct Video Uploader (Local Server + Google Drive Sync)")
 
         st.markdown("---")
         st.markdown("#### 🎬 Spotlight Individual Video Player")
@@ -2628,28 +2691,19 @@ def render_teacher_dashboard():
                 for rec in all_recs:
                     with st.expander(f"🎬 {rec['title']} ({rec['subject']} - {rec['lecture_date']})"):
                         st.write(f"**Notes:** {rec.get('description') or 'No notes added.'}")
-                        
-                        col_l1, col_l2 = st.columns([1.5, 1])
-                        with col_l1:
-                            st.link_button("📥 Direct Download Link", rec['download_url'], use_container_width=True)
-                        with col_l2:
-                            with st.form(f"del_rec_form_{rec['id']}"):
-                                if st.form_submit_button("🗑️ Delete Recording", use_container_width=True):
-                                    try:
-                                        with get_db_connection() as conn_w:
-                                            conn_w.execute("DELETE FROM recordings WHERE id = ?", (rec['id'],))
-                                            conn_w.commit()
-                                    except Exception as e:
-                                        print(f"Error deleting recording: {e}")
-                                    if is_supabase_active():
-                                        supabase_request("DELETE", "recordings", params=f"id=eq.{rec['id']}")
-                                    st.success("Deleted recording.")
-                                    st.rerun()
-
-                        if "drive.google.com" in rec['embed_url'] or "youtube.com" in rec['embed_url']:
-                            st.markdown(f"""
-                            <iframe src="{rec['embed_url']}" width="100%" height="320" frameborder="0" allow="autoplay; fullscreen" allowfullscreen style="border-radius:8px; border:1px solid #cbd5e1; margin-top:8px;"></iframe>
-                            """, unsafe_allow_html=True)
+                        render_recording_player(rec, is_student=False, key_suffix=f"tch_rec_{rec['id']}")
+                        with st.form(f"del_rec_form_{rec['id']}"):
+                            if st.form_submit_button("🗑️ Delete Recording", use_container_width=True):
+                                try:
+                                    with get_db_connection() as conn_w:
+                                        conn_w.execute("DELETE FROM recordings WHERE id = ?", (rec['id'],))
+                                        conn_w.commit()
+                                except Exception as e:
+                                    print(f"Error deleting recording: {e}")
+                                if is_supabase_active():
+                                    supabase_request("DELETE", "recordings", params=f"id=eq.{rec['id']}")
+                                st.success("Deleted recording.")
+                                st.rerun()
 
     # ---------------------------------------------
     # TEACHER TAB 2.5: FEES MANAGEMENT
@@ -3319,16 +3373,7 @@ def render_student_dashboard():
                 </div>
                 """, unsafe_allow_html=True)
 
-                col_v, col_d = st.columns([2.5, 1])
-                with col_v:
-                    if "drive.google.com" in r['embed_url'] or "youtube.com" in r['embed_url']:
-                        st.markdown(f"""
-                        <iframe src="{r['embed_url']}" width="100%" height="340" frameborder="0" allow="autoplay; fullscreen" allowfullscreen style="border-radius:10px; border:1px solid #cbd5e1;"></iframe>
-                        """, unsafe_allow_html=True)
-                with col_d:
-                    st.link_button("📥 Direct Download Video", r['download_url'], type="primary", use_container_width=True)
-                    st.link_button("🔗 Open in Google Drive", r['drive_link'], use_container_width=True)
-                    st.caption("Tip: Download to your phone or laptop for offline revision without buffering.")
+                render_recording_player(r, is_student=True, key_suffix=f"std_rec_{r['id']}")
                 st.markdown("---")
 
     # ---------------------------------------------
