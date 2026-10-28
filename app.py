@@ -166,26 +166,35 @@ def init_database():
     )
     """)
 
-    # Automatic column migrations for existing databases
+    # Safe automatic column migrations for existing databases
     try:
-        c.execute("ALTER TABLE class_session ADD COLUMN server TEXT DEFAULT 'jitsi.riot.im'")
-    except Exception:
-        pass
-    try:
-        c.execute("ALTER TABLE class_session ADD COLUMN teacher_notes TEXT DEFAULT ''")
+        c.execute("PRAGMA table_info(class_session)")
+        existing_cols = [r[1] for r in c.fetchall()]
+        if 'server' not in existing_cols:
+            c.execute("ALTER TABLE class_session ADD COLUMN server TEXT DEFAULT 'jitsi.riot.im'")
+        if 'teacher_notes' not in existing_cols:
+            c.execute("ALTER TABLE class_session ADD COLUMN teacher_notes TEXT DEFAULT ''")
+        conn.commit()
     except Exception:
         pass
 
     # Ensure row 1 exists
-    c.execute("SELECT COUNT(*) as cnt FROM class_session WHERE id = 1")
-    if c.fetchone()['cnt'] == 0:
-        c.execute("""
-        INSERT INTO class_session (id, is_live, topic, room_name, server, teacher_notes)
-        VALUES (1, 0, 'Mathematics & Science Live Coaching', 'SistersLiveClass_MasterRoom', 'jitsi.riot.im', 'Welcome! Camera is OFF by default. Turn on mic when asked.')
-        """)
-    else:
-        # Migrate any blocked or empty server domains to embed-friendly jitsi.riot.im
-        c.execute("UPDATE class_session SET server = 'jitsi.riot.im' WHERE server = 'meet.ffmuc.net' OR server IS NULL OR server = ''")
+    try:
+        c.execute("SELECT COUNT(*) as cnt FROM class_session WHERE id = 1")
+        if c.fetchone()['cnt'] == 0:
+            c.execute("""
+            INSERT INTO class_session (id, is_live, topic, room_name, server, teacher_notes)
+            VALUES (1, 0, 'Mathematics & Science Live Coaching', 'SistersLiveClass_MasterRoom', 'jitsi.riot.im', 'Welcome! Camera is OFF by default. Turn on mic when asked.')
+            """)
+            conn.commit()
+        else:
+            try:
+                c.execute("UPDATE class_session SET server = 'jitsi.riot.im' WHERE server = 'meet.ffmuc.net' OR server IS NULL OR server = ''")
+                conn.commit()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
     # 3. Attendance
