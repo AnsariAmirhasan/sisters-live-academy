@@ -136,6 +136,20 @@ CREATE TABLE IF NOT EXISTS public.fees (
     note TEXT DEFAULT ''
 );
 
+-- 8. Future Scheduled Classes Table
+CREATE TABLE IF NOT EXISTS public.scheduled_classes (
+    id BIGSERIAL PRIMARY KEY,
+    topic TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    teacher_name TEXT NOT NULL,
+    scheduled_date TEXT NOT NULL,
+    scheduled_time TEXT NOT NULL,
+    room_name TEXT NOT NULL,
+    notes TEXT DEFAULT '',
+    status TEXT DEFAULT 'Scheduled',
+    allow_waiting_room INTEGER DEFAULT 1
+);
+
 -- Enable Row Level Security (RLS) with open policy for service_role and authenticated users
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.class_session ENABLE ROW LEVEL SECURITY;
@@ -144,6 +158,7 @@ ALTER TABLE public.recordings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.announcements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.doubts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.fees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.scheduled_classes ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Allow all operations on users" ON public.users FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all operations on class_session" ON public.class_session FOR ALL USING (true) WITH CHECK (true);
@@ -152,3 +167,4 @@ CREATE POLICY "Allow all operations on recordings" ON public.recordings FOR ALL 
 CREATE POLICY "Allow all operations on announcements" ON public.announcements FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all operations on doubts" ON public.doubts FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all operations on fees" ON public.fees FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all operations on scheduled_classes" ON public.scheduled_classes FOR ALL USING (true) WITH CHECK (true);

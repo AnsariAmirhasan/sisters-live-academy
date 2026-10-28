@@ -433,8 +433,28 @@ def init_database():
     )
     """)
 
+    # 8. Future Scheduled Classes Table
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS scheduled_classes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        topic TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        teacher_name TEXT NOT NULL,
+        scheduled_date TEXT NOT NULL,
+        scheduled_time TEXT NOT NULL,
+        room_name TEXT NOT NULL,
+        notes TEXT DEFAULT '',
+        status TEXT DEFAULT 'Scheduled',
+        allow_waiting_room INTEGER DEFAULT 1
+    )
+    """)
+    try:
+        c.execute("ALTER TABLE scheduled_classes ADD COLUMN allow_waiting_room INTEGER DEFAULT 1")
+    except Exception:
+        pass
+
     # ---------------------------------------------
-    # 8. ENFORCE 3-TIER DEFAULT ACCOUNTS
+    # 9. ENFORCE 3-TIER DEFAULT ACCOUNTS
     # ---------------------------------------------
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -518,6 +538,17 @@ def init_database():
             ('student2', 'Student 2', 'October 2026 Tuition', '1500', '2026-10-10', 'Pending', '-', '-', 'Dues reminder sent'),
             ('student3', 'Student 3', 'October 2026 Tuition', '1500', '2026-10-10', 'Paid', '2026-10-08', 'Teacher 1', 'Paid in Cash')
         """)
+
+    # Seed initial scheduled class if empty
+    c.execute("SELECT COUNT(*) as cnt FROM scheduled_classes")
+    if c.fetchone()['cnt'] == 0:
+        tomorrow_str = str(datetime.date.today() + datetime.timedelta(days=1))
+        c.execute("""
+        INSERT INTO scheduled_classes (topic, subject, teacher_name, scheduled_date, scheduled_time, room_name, notes, status, allow_waiting_room)
+        VALUES 
+            ('Trigonometry & Calculus Deep Dive', 'Mathematics', 'Teacher 1', ?, '18:00', 'SistersLiveClass_MasterRoom', 'Bring graph books. Waiting lounge is open for early discussion!', 'Scheduled', 1),
+            ('Electromagnetism & Circuit Laws', 'Physics', 'Teacher 2', ?, '17:30', 'SistersLiveClass_MasterRoom', 'Revise chapter 4 formulas before entering.', 'Scheduled', 1)
+        """, (tomorrow_str, str(datetime.date.today() + datetime.timedelta(days=2))))
 
     conn.commit()
     conn.close()
@@ -1343,6 +1374,171 @@ def render_student_fees_portal():
 
 
 # ==========================================
+# 6.6. FUTURE CLASS SCHEDULER & WAITING LOUNGE CONTROLLER
+# ==========================================
+def render_class_scheduler_widget(is_admin: bool = False):
+    st.markdown("#### 📅 Future Class Scheduler & Waiting Lounge Controller")
+    st.caption("Plan and schedule upcoming live classes. Enable the pre-class waiting lounge so students can join early to test audio, meet, and discuss.")
+
+    # 1. Fetch scheduled classes
+    scheduled_list = []
+    if is_supabase_active():
+        ok, rows = supabase_request("GET", "scheduled_classes", params="order=scheduled_date.asc,scheduled_time.asc&select=*")
+        if ok and rows:
+            scheduled_list = rows
+
+    if not scheduled_list:
+        with get_db_connection() as conn_r:
+            c_r = conn_r.cursor()
+            c_r.execute("SELECT * FROM scheduled_classes ORDER BY scheduled_date ASC, scheduled_time ASC")
+            scheduled_list = [dict(r) for r in c_r.fetchall()]
+
+    col_sc1, col_sc2 = st.columns([1.4, 1.6])
+
+    with col_sc1:
+        st.markdown("##### ➕ Schedule a Future Class")
+        with st.form(f"schedule_class_form_{'adm' if is_admin else 'tch'}", clear_on_submit=True):
+            sc_topic = st.text_input("Class Topic", placeholder="e.g. Calculus & Derivatives Masterclass")
+            sc_sub = st.selectbox("Subject", ["Mathematics", "Physics", "Chemistry", "Biology", "English", "General Coaching"])
+            sc_teacher = st.text_input("Teacher / Host Name", value=st.session_state.name or "Teacher")
+            
+            c_d1, c_d2 = st.columns(2)
+            with c_d1:
+                sc_date = st.date_input("Scheduled Date", value=datetime.date.today())
+            with c_d2:
+                sc_time = st.text_input("Time (HH:MM)", value="18:00", placeholder="18:00")
+
+            sc_room = st.text_input("Room Key", value="SistersLiveClass_MasterRoom")
+            sc_notes = st.text_input("Instructions for Students", value="Camera is OFF by default. Waiting lounge is open for discussion.")
+            sc_wait = st.checkbox("Allow Students to Join Waiting Lounge Early", value=True)
+
+            btn_sched = st.form_submit_button("🗓️ Schedule Class", type="primary", use_container_width=True)
+
+            if btn_sched:
+                if not sc_topic.strip():
+                    st.error("Please enter a class topic.")
+                else:
+                    date_str = str(sc_date)
+                    wait_val = 1 if sc_wait else 0
+                    try:
+                        with get_db_connection() as conn_w:
+                            conn_w.execute("""
+                            INSERT INTO scheduled_classes (topic, subject, teacher_name, scheduled_date, scheduled_time, room_name, notes, status, allow_waiting_room)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 'Scheduled', ?)
+                            """, (sc_topic.strip(), sc_sub, sc_teacher.strip(), date_str, sc_time.strip(), sc_room.strip(), sc_notes.strip(), wait_val))
+                            conn_w.commit()
+
+                        if is_supabase_active():
+                            supabase_request("POST", "scheduled_classes", {
+                                "topic": sc_topic.strip(),
+                                "subject": sc_sub,
+                                "teacher_name": sc_teacher.strip(),
+                                "scheduled_date": date_str,
+                                "scheduled_time": sc_time.strip(),
+                                "room_name": sc_room.strip(),
+                                "notes": sc_notes.strip(),
+                                "status": "Scheduled",
+                                "allow_waiting_room": wait_val
+                            })
+
+                        st.success(f"Class '{sc_topic.strip()}' scheduled for {date_str} at {sc_time.strip()}!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error scheduling class: {e}")
+
+    with col_sc2:
+        st.markdown("##### 📋 Scheduled Classes Queue")
+        active_scheduled = [c for c in scheduled_list if c.get('status') in ('Scheduled', 'Live')]
+        if not active_scheduled:
+            st.info("No upcoming classes scheduled. Fill the form on the left to schedule a class.")
+        else:
+            for sc in active_scheduled:
+                is_sc_live = sc.get('status') == 'Live'
+                st_color = "#059669" if is_sc_live else "#0284c7"
+                st_bg = "#f0fdf4" if is_sc_live else "#f0f9ff"
+                status_badge = "🔴 LIVE NOW" if is_sc_live else "🗓️ SCHEDULED"
+                wl_badge = "🛋️ Waiting Lounge: OPEN" if sc.get('allow_waiting_room', 1) == 1 else "🔒 Waiting Lounge: Closed"
+
+                with st.container():
+                    st.markdown(f"""
+                    <div style="background:{st_bg}; border:1px solid {st_color}; border-radius:10px; padding:12px; margin-bottom:10px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+                            <b style="color:#1e293b; font-size:1rem;">[{sc.get('subject')}] {sc.get('topic')}</b>
+                            <span style="background:{st_color}; color:white; padding:2px 8px; border-radius:12px; font-weight:700; font-size:0.75rem;">{status_badge}</span>
+                        </div>
+                        <div style="margin-top:6px; font-size:0.88rem; color:#475569;">
+                            <b>Teacher:</b> {sc.get('teacher_name')} &nbsp;|&nbsp; 
+                            <b>Date:</b> {sc.get('scheduled_date')} at {sc.get('scheduled_time')}<br>
+                            <b>Room:</b> <code>{sc.get('room_name')}</code> &nbsp;|&nbsp; 
+                            <span style="color:#0284c7; font-weight:600;">{wl_badge}</span>
+                        </div>
+                        {f'<div style="font-size:0.82rem; color:#64748b; margin-top:4px;"><b>Note:</b> {sc.get("notes")}</div>' if sc.get('notes') else ''}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    btn_c1, btn_c2, btn_c3 = st.columns([1.5, 1, 1])
+
+                    with btn_c1:
+                        with st.form(f"launch_sc_form_{sc['id']}_{'adm' if is_admin else 'tch'}"):
+                            if st.form_submit_button("🚀 Launch Live Now", type="primary", use_container_width=True):
+                                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                host_name = sc.get('teacher_name') or st.session_state.name or "Teacher"
+                                try:
+                                    with get_db_connection() as conn_w:
+                                        conn_w.execute("""
+                                        UPDATE class_session 
+                                        SET is_live = 1, topic = ?, room_name = ?, teacher_notes = ?, started_at = ?, host_teacher = ?
+                                        WHERE id = 1
+                                        """, (sc['topic'], sc['room_name'], sc.get('notes', ''), now_str, host_name))
+                                        conn_w.execute("UPDATE scheduled_classes SET status = 'Live' WHERE id = ?", (sc['id'],))
+                                        conn_w.commit()
+
+                                    if is_supabase_active():
+                                        supabase_request("PATCH", "class_session", {
+                                            "is_live": 1, "topic": sc['topic'], "room_name": sc['room_name'],
+                                            "teacher_notes": sc.get('notes', ''), "started_at": now_str, "host_teacher": host_name
+                                        }, params="id=eq.1")
+                                        supabase_request("PATCH", "scheduled_classes", {"status": "Live"}, params=f"id=eq.{sc['id']}")
+
+                                    st.success(f"Broadcast started for '{sc['topic']}'! Students in waiting lounge are now live.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error launching live broadcast: {e}")
+
+                    with btn_c2:
+                        with st.form(f"done_sc_form_{sc['id']}_{'adm' if is_admin else 'tch'}"):
+                            if st.form_submit_button("✅ Done", use_container_width=True):
+                                try:
+                                    with get_db_connection() as conn_w:
+                                        conn_w.execute("UPDATE scheduled_classes SET status = 'Completed' WHERE id = ?", (sc['id'],))
+                                        conn_w.commit()
+
+                                    if is_supabase_active():
+                                        supabase_request("PATCH", "scheduled_classes", {"status": "Completed"}, params=f"id=eq.{sc['id']}")
+
+                                    st.success("Marked as Completed.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error completing class: {e}")
+
+                    with btn_c3:
+                        with st.form(f"del_sc_form_{sc['id']}_{'adm' if is_admin else 'tch'}"):
+                            if st.form_submit_button("🗑️ Cancel", use_container_width=True):
+                                try:
+                                    with get_db_connection() as conn_w:
+                                        conn_w.execute("DELETE FROM scheduled_classes WHERE id = ?", (sc['id'],))
+                                        conn_w.commit()
+
+                                    if is_supabase_active():
+                                        supabase_request("DELETE", "scheduled_classes", params=f"id=eq.{sc['id']}")
+
+                                    st.warning("Scheduled class removed.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error deleting class: {e}")
+
+
+# ==========================================
 # 7. SUPER ADMIN DASHBOARD
 # ==========================================
 def render_admin_dashboard():
@@ -1666,6 +1862,10 @@ def render_admin_dashboard():
             )
         else:
             st.info("💡 To begin teaching or broadcasting, configure your topic and click **'Start Live Broadcast'** above.")
+
+        st.markdown("---")
+        with st.expander("📅 Class Scheduler & Pre-Class Waiting Lounge Queue", expanded=not is_live):
+            render_class_scheduler_widget(is_admin=True)
 
     # ---------------------------------------------
     # ADMIN TAB 3: RECORDED CLASSES (GOOGLE DRIVE)
@@ -2162,6 +2362,9 @@ def render_teacher_dashboard():
         else:
             st.info("💡 To begin teaching, configure your topic and click **'Start Live Broadcast'** above.")
 
+        st.markdown("---")
+        with st.expander("📅 Class Scheduler & Pre-Class Waiting Lounge Queue", expanded=not is_live):
+            render_class_scheduler_widget(is_admin=False)
 
     # ---------------------------------------------
     # TEACHER TAB 2: RECORDED CLASSES (GOOGLE DRIVE)
@@ -2759,17 +2962,109 @@ def render_student_dashboard():
         teacher_notes = sess.get('teacher_notes') or ""
 
         if not is_live:
-            st.markdown("""
-            <div class="glass-card" style="text-align: center; padding: 36px 20px;">
-                <div class="offline-badge" style="font-size: 1.05rem; padding: 8px 24px; margin-bottom: 14px;">
-                    ⚪ Live Class is Currently Offline
+            # Query upcoming scheduled classes
+            sched_classes = []
+            if is_supabase_active():
+                ok, rows = supabase_request("GET", "scheduled_classes", params="status=eq.Scheduled&order=scheduled_date.asc,scheduled_time.asc&limit=3&select=*")
+                if ok and rows:
+                    sched_classes = rows
+
+            if not sched_classes:
+                c.execute("SELECT * FROM scheduled_classes WHERE status = 'Scheduled' ORDER BY scheduled_date ASC, scheduled_time ASC LIMIT 3")
+                sched_classes = [dict(r) for r in c.fetchall()]
+
+            next_class = sched_classes[0] if sched_classes else None
+            is_in_waiting_lounge = st.session_state.get('in_waiting_lounge', False)
+
+            if is_in_waiting_lounge and next_class:
+                # Student is inside the pre-class waiting lounge!
+                st.markdown(f"""
+                <div class="glass-card" style="border: 2px solid #0284c7; background: #f0f9ff; margin-bottom: 14px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                        <div class="live-badge" style="background: #0284c7;">
+                            <span class="live-dot" style="background: #38bdf8;"></span>
+                            <span>🛋️ PRE-CLASS WAITING LOUNGE ACTIVE</span>
+                        </div>
+                        <span style="font-size: 0.85rem; color: #0369a1; font-weight: 600;">
+                            ⏰ Scheduled for {next_class['scheduled_date']} at {next_class['scheduled_time']}
+                        </span>
+                    </div>
+                    <h3 style="margin: 8px 0 4px 0; color: #0c4a6e;">{next_class['topic']}</h3>
+                    <p style="margin: 0; color: #0369a1; font-size: 0.92rem;">
+                        <b>Conducted by:</b> {next_class['teacher_name']} &nbsp;|&nbsp; 
+                        <b>Instructions:</b> {next_class.get('notes') or 'Waiting lounge is open. Test your audio and chat with classmates!'}
+                    </p>
                 </div>
-                <h3 style="color: #334155; margin-bottom: 6px;">No broadcast active right now.</h3>
-                <p style="color: #64748b; max-width: 520px; margin: 0 auto;">
-                    Check announcements above for session schedules, or watch past lecture videos from the <b>Recorded Lectures & Notes</b> tab.
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
+
+                col_w1, col_w2 = st.columns([3, 1])
+                with col_w2:
+                    with st.form("leave_waiting_lounge_form"):
+                        if st.form_submit_button("🚪 Leave Waiting Lounge", use_container_width=True):
+                            st.session_state.in_waiting_lounge = False
+                            st.rerun()
+
+                # Render embedded room for pre-class student discussion
+                wl_room = next_class.get('room_name') or room_name
+                render_jitsi_classroom(
+                    domain=server,
+                    room_name=wl_room,
+                    display_name=f"{st.session_state.name} (Student - Waiting Lounge)",
+                    is_teacher=False
+                )
+
+            else:
+                st.markdown("""
+                <div class="glass-card" style="text-align: center; padding: 24px 20px 18px 20px; margin-bottom: 15px;">
+                    <div class="offline-badge" style="font-size: 0.95rem; padding: 6px 18px; margin-bottom: 8px;">
+                        ⚪ Live Broadcast is Currently Offline
+                    </div>
+                    <h3 style="color: #334155; margin-bottom: 4px;">No live broadcast active right now.</h3>
+                    <p style="color: #64748b; max-width: 520px; margin: 0 auto; font-size: 0.92rem;">
+                        Classes start according to the schedule below. When the waiting lounge is open, enter early to discuss with your classmates!
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if next_class:
+                    allow_wl = next_class.get('allow_waiting_room', 1) == 1
+                    wl_status_pill = '<span style="background: #10b981; color: white; padding: 3px 10px; border-radius: 9999px; font-weight: 700; font-size: 0.78rem;">🛋️ WAITING LOUNGE OPEN</span>' if allow_wl else '<span style="background: #64748b; color: white; padding: 3px 10px; border-radius: 9999px; font-weight: 700; font-size: 0.78rem;">WAITING LOUNGE CLOSED</span>'
+
+                    st.markdown(f"""
+                    <div style="background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); border: 1.5px solid #38bdf8; border-radius: 14px; padding: 18px 22px; margin-bottom: 14px; box-shadow: 0 4px 15px rgba(2, 132, 199, 0.08);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                            <div>
+                                <span style="font-size: 0.8rem; background: #0284c7; color: white; padding: 3px 10px; border-radius: 6px; font-weight: 700;">UPCOMING NEXT CLASS</span>
+                                <span style="margin-left: 8px; font-size: 0.9rem; color: #0369a1; font-weight: 600;">📅 {next_class['scheduled_date']} at {next_class['scheduled_time']}</span>
+                            </div>
+                            {wl_status_pill}
+                        </div>
+                        <h3 style="margin: 10px 0 4px 0; color: #0c4a6e;">{next_class['topic']}</h3>
+                        <p style="margin: 0; color: #0369a1; font-size: 0.92rem;">
+                            <b>Subject:</b> {next_class['subject']} &nbsp;|&nbsp; 
+                            <b>Teacher:</b> {next_class['teacher_name']} &nbsp;|&nbsp; 
+                            <b>Note:</b> {next_class.get('notes') or 'No special instructions.'}
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    if allow_wl:
+                        col_wl1, col_wl2, col_wl3 = st.columns([1, 2, 1])
+                        with col_wl2:
+                            with st.form("enter_waiting_lounge_form"):
+                                btn_enter_wl = st.form_submit_button("🛋️ Enter Student Waiting Lounge Early (Discuss & Wait)", type="primary", use_container_width=True)
+                                if btn_enter_wl:
+                                    st.session_state.in_waiting_lounge = True
+                                    st.rerun()
+
+                if len(sched_classes) > 1:
+                    with st.expander("📅 View More Upcoming Scheduled Classes"):
+                        for sc_item in sched_classes[1:]:
+                            st.markdown(f"""
+                            - **[{sc_item['subject']}] {sc_item['topic']}** — Conducted by *{sc_item['teacher_name']}*  
+                              📅 **Date & Time:** {sc_item['scheduled_date']} at {sc_item['scheduled_time']} | Note: {sc_item.get('notes', 'None')}
+                            """)
+
             st.session_state.live_joined = False
             st.session_state.joined_live_class = False
         else:
