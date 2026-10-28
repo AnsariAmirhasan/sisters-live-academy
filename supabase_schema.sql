@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS public.doubts (
 
 -- Insert Default Class Session Row
 INSERT INTO public.class_session (id, is_live, topic, room_name, server, host_teacher, teacher_notes)
-VALUES (1, 0, 'Mathematics & Science Live Coaching', 'SistersLiveClass_MasterRoom', 'jitsi.riot.im', 'Lead Teacher', 'Welcome! Camera is OFF by default. Turn on mic when asked.')
+VALUES (1, 0, 'Urdu & Arabic Live Class', 'SistersLiveClass_MasterRoom', 'jitsi.riot.im', 'Lead Teacher', 'Welcome! Camera is OFF by default. Turn on mic when asked.')
 ON CONFLICT (id) DO UPDATE SET server = EXCLUDED.server, host_teacher = EXCLUDED.host_teacher;
 
 -- Enforce Super Admin Account (admin / Amir@7861)

@@ -330,12 +330,13 @@ def init_database():
         if c.fetchone()['cnt'] == 0:
             c.execute("""
             INSERT INTO class_session (id, is_live, topic, room_name, server, teacher_notes, host_teacher)
-            VALUES (1, 0, 'Mathematics & Science Live Coaching', 'SistersLiveClass_MasterRoom', 'jitsi.riot.im', 'Welcome! Camera is OFF by default. Turn on mic when asked.', 'Lead Teacher')
+            VALUES (1, 0, 'Urdu & Arabic Live Class', 'SistersLiveClass_MasterRoom', 'jitsi.riot.im', 'Welcome! Camera is OFF by default. Turn on mic when asked.', 'Lead Teacher')
             """)
             conn.commit()
         else:
             try:
                 c.execute("UPDATE class_session SET server = 'jitsi.riot.im' WHERE server = 'meet.ffmuc.net' OR server IS NULL OR server = ''")
+                c.execute("UPDATE class_session SET topic = 'Urdu & Arabic Live Class' WHERE topic LIKE '%Mathematics%' OR topic LIKE '%Science%'")
                 conn.commit()
             except Exception:
                 pass
@@ -539,6 +540,14 @@ def init_database():
             ('student3', 'Student 3', 'October 2026 Tuition', '1500', '2026-10-10', 'Paid', '2026-10-08', 'Teacher 1', 'Paid in Cash')
         """)
 
+    # One-time cleanup of legacy demo Math/Physics entries
+    try:
+        c.execute("DELETE FROM scheduled_classes WHERE topic LIKE '%Trigonometry%' OR topic LIKE '%Electromagnetism%' OR subject LIKE '%Mathematics%' OR subject LIKE '%Physics%'")
+        c.execute("UPDATE class_session SET topic = 'Urdu & Arabic Live Class' WHERE topic LIKE '%Mathematics%' OR topic LIKE '%Science%'")
+        c.execute("UPDATE recordings SET subject = 'Urdu / Arabic', title = 'Urdu & Arabic Foundation Class 01' WHERE title LIKE '%Foundation & Orientation Class 01%'")
+    except Exception as e:
+        print(f"Cleanup error: {e}")
+
     # Seed initial scheduled class if empty
     c.execute("SELECT COUNT(*) as cnt FROM scheduled_classes")
     if c.fetchone()['cnt'] == 0:
@@ -546,8 +555,8 @@ def init_database():
         c.execute("""
         INSERT INTO scheduled_classes (topic, subject, teacher_name, scheduled_date, scheduled_time, room_name, notes, status, allow_waiting_room)
         VALUES 
-            ('Trigonometry & Calculus Deep Dive', 'Mathematics', 'Teacher 1', ?, '18:00', 'SistersLiveClass_MasterRoom', 'Bring graph books. Waiting lounge is open for early discussion!', 'Scheduled', 1),
-            ('Electromagnetism & Circuit Laws', 'Physics', 'Teacher 2', ?, '17:30', 'SistersLiveClass_MasterRoom', 'Revise chapter 4 formulas before entering.', 'Scheduled', 1)
+            ('Urdu Grammar & Nazm Reading Lesson 1', 'Urdu / Arabic', 'Teacher 1', ?, '18:00', 'SistersLiveClass_MasterRoom', 'Bring notebooks. Waiting lounge is open for early practice!', 'Scheduled', 1),
+            ('Arabic Grammar (Nahw & Sarf) Essentials', 'Urdu / Arabic', 'Teacher 2', ?, '17:30', 'SistersLiveClass_MasterRoom', 'Review previous vocabulary before entering.', 'Scheduled', 1)
         """, (tomorrow_str, str(datetime.date.today() + datetime.timedelta(days=2))))
 
     conn.commit()
@@ -1398,8 +1407,8 @@ def render_class_scheduler_widget(is_admin: bool = False):
     with col_sc1:
         st.markdown("##### ➕ Schedule a Future Class")
         with st.form(f"schedule_class_form_{'adm' if is_admin else 'tch'}", clear_on_submit=True):
-            sc_topic = st.text_input("Class Topic", placeholder="e.g. Calculus & Derivatives Masterclass")
-            sc_sub = st.selectbox("Subject", ["Mathematics", "Physics", "Chemistry", "Biology", "English", "General Coaching"])
+            sc_topic = st.text_input("Class Topic", placeholder="e.g. Urdu Grammar / Arabic Reading Lesson 1")
+            sc_sub = st.text_input("Subject", value="Urdu / Arabic", placeholder="Type any subject e.g. Urdu, Arabic, Tajweed, Grammar...", key=f"sc_sub_{'adm' if is_admin else 'tch'}")
             sc_teacher = st.text_input("Teacher / Host Name", value=st.session_state.name or "Teacher")
             
             c_d1, c_d2 = st.columns(2)
@@ -1801,7 +1810,7 @@ def render_admin_dashboard():
             if not is_live:
                 with st.form("admin_start_class_form"):
                     st.write("<b>Configure Session</b>", unsafe_allow_html=True)
-                    f_topic = st.text_input("Topic", value=session_topic or "Mathematics & Science Coaching", key="adm_topic")
+                    f_topic = st.text_input("Topic", value=session_topic or "Urdu & Arabic Live Class", key="adm_topic")
                     f_server = st.selectbox("Jitsi Server (Embed-Friendly)", ["jitsi.riot.im", "meet.jit.si", "framatalk.org"], index=0, key="adm_server")
                     f_room = st.text_input("Room Key", value=room_name or "SistersLiveClass_MasterRoom", key="adm_room")
                     f_notes = st.text_input("Note for Students", value="Camera is OFF by default. Unmute mic to ask doubts.", key="adm_notes")
@@ -1896,7 +1905,7 @@ def render_admin_dashboard():
                 with up_col1:
                     up_title = st.text_input("Recording Title", value=uploaded_file.name.rsplit(".", 1)[0], key="admin_up_title")
                 with up_col2:
-                    up_sub = st.selectbox("Subject", ["Mathematics", "Physics", "Chemistry", "Biology", "English", "General Coaching"], key="admin_up_sub")
+                    up_sub = st.text_input("Subject", value="Urdu / Arabic", placeholder="Type any subject e.g. Urdu, Arabic, Tajweed, Grammar...", key="admin_up_sub")
 
                 if st.button("🚀 Upload File to Google Drive Folder", type="primary", use_container_width=True, key="btn_admin_up"):
                     with st.spinner("Uploading video to Google Drive folder..."):
@@ -1934,8 +1943,8 @@ def render_admin_dashboard():
 
         with col_r1:
             with st.form("admin_add_rec_form", clear_on_submit=True):
-                r_title = st.text_input("Lecture Title", placeholder="e.g. Chapter 4: Chemical Bonding")
-                r_subject = st.selectbox("Subject", ["Mathematics", "Physics", "Chemistry", "Biology", "English", "General Coaching"], key="admin_rec_sub")
+                r_title = st.text_input("Lecture Title", placeholder="e.g. Urdu Grammar / Arabic Reading Lesson 1")
+                r_subject = st.text_input("Subject", value="Urdu / Arabic", placeholder="Type any subject e.g. Urdu, Arabic, Tajweed, Grammar...", key="admin_rec_sub")
                 r_date = st.date_input("Class Date", datetime.date.today(), key="admin_rec_date")
                 r_link = st.text_input("Google Drive / YouTube Link", placeholder="https://drive.google.com/file/d/FILE_ID/view?usp=sharing")
                 r_desc = st.text_area("Notes / Summary", placeholder="Topics covered, homework exercises, formulas...")
@@ -2297,7 +2306,7 @@ def render_teacher_dashboard():
             if not is_live:
                 with st.form("start_class_form"):
                     st.write("<b>Configure Session</b>", unsafe_allow_html=True)
-                    f_topic = st.text_input("Topic", value=session_topic or "Mathematics & Science Coaching")
+                    f_topic = st.text_input("Topic", value=session_topic or "Urdu & Arabic Live Class")
                     f_server = st.selectbox("Jitsi Server (Embed-Friendly)", ["jitsi.riot.im", "meet.jit.si", "framatalk.org"], index=0)
                     f_room = st.text_input("Room Key", value=room_name or "SistersLiveClass_MasterRoom")
 
@@ -2398,7 +2407,7 @@ def render_teacher_dashboard():
                 with up_col1:
                     up_title = st.text_input("Recording Title", value=uploaded_file.name.rsplit(".", 1)[0], key="auto_up_title")
                 with up_col2:
-                    up_sub = st.selectbox("Subject", ["Mathematics", "Physics", "Chemistry", "Biology", "English", "General Coaching"], key="auto_up_sub")
+                    up_sub = st.text_input("Subject", value="Urdu / Arabic", placeholder="Type any subject e.g. Urdu, Arabic, Tajweed, Grammar...", key="auto_up_sub")
 
                 if st.button("🚀 Upload File to Google Drive Folder", type="primary", use_container_width=True, key="btn_auto_up"):
                     with st.spinner("Uploading video to Google Drive folder..."):
@@ -2441,8 +2450,8 @@ def render_teacher_dashboard():
         with col_r1:
             st.markdown("### ➕ Publish Recorded Lecture")
             with st.form("add_rec_form", clear_on_submit=True):
-                r_title = st.text_input("Lecture Title", placeholder="e.g. Chapter 4: Chemical Bonding")
-                r_subject = st.selectbox("Subject", ["Mathematics", "Physics", "Chemistry", "Biology", "English", "General Coaching"])
+                r_title = st.text_input("Lecture Title", placeholder="e.g. Urdu Grammar / Arabic Reading Lesson 1")
+                r_subject = st.text_input("Subject", value="Urdu / Arabic", placeholder="Type any subject e.g. Urdu, Arabic, Tajweed, Grammar...", key="teacher_rec_sub")
                 r_date = st.date_input("Class Date", datetime.date.today())
                 r_link = st.text_input("Google Drive / YouTube Link", placeholder="https://drive.google.com/file/d/FILE_ID/view?usp=sharing")
                 r_desc = st.text_area("Notes / Summary", placeholder="Topics covered, homework exercises, formulas...")
@@ -3157,8 +3166,19 @@ def render_student_dashboard():
         col_s1, col_s2 = st.columns([2, 1])
         with col_s1:
             q = st.text_input("🔍 Search Lectures", placeholder="Search by topic or title...")
-        with col_s2:
-            sub_filter = st.selectbox("Subject Filter", ["All Subjects", "Mathematics", "Physics", "Chemistry", "Biology", "English", "General Coaching"])
+        existing_subs = []
+        try:
+            with get_db_connection() as conn_sub:
+                c_sub = conn_sub.cursor()
+                c_sub.execute("SELECT DISTINCT subject FROM recordings WHERE subject IS NOT NULL AND subject != ''")
+                existing_subs = [row['subject'] for row in c_sub.fetchall()]
+        except Exception:
+            pass
+        subj_filter_options = ["All Subjects", "Urdu / Arabic", "Urdu", "Arabic", "Tajweed", "Islamic Studies"]
+        for s_opt in existing_subs:
+            if s_opt not in subj_filter_options:
+                subj_filter_options.append(s_opt)
+        sub_filter = st.selectbox("Subject Filter", subj_filter_options, key="std_sub_filter")
 
         recs = []
         if is_supabase_active():
@@ -3231,7 +3251,7 @@ def render_student_dashboard():
         with col_d1:
             st.markdown("### ✍️ Ask a Question")
             with st.form("ask_doubt_form", clear_on_submit=True):
-                d_sub = st.selectbox("Subject", ["Mathematics", "Physics", "Chemistry", "Biology", "English", "General Coaching"])
+                d_sub = st.text_input("Subject", value="Urdu / Arabic", placeholder="Type any subject e.g. Urdu, Arabic, Tajweed, Grammar...", key="std_doubt_sub")
                 d_q = st.text_area("Your Doubt / Question", placeholder="Explain your question in detail...")
                 btn_d = st.form_submit_button("Submit Question", type="primary", use_container_width=True)
 
