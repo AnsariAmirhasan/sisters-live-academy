@@ -769,65 +769,192 @@ def update_payment_settings(upi_id: str, payment_number: str, account_holder_nam
 
 
 # ==========================================
-# 4. CUSTOM CSS (MODERN EDTECH STYLING)
+# ==========================================
+# 4. CUSTOM CSS (MODERN EDTECH APP STYLING)
 # ==========================================
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap');
 
     html, body, [class*="css"] {
-        font-family: 'Outfit', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        font-family: 'Outfit', 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
 
-    .block-container {
-        padding-top: 1.5rem;
-        padding-bottom: 2.5rem;
+    /* --------------------------------------------------------
+       1. COMPLETE STREAMLIT CHROME, FOOTER & ANCHOR HIDING
+       -------------------------------------------------------- */
+    header[data-testid="stHeader"] {
+        display: none !important;
+        height: 0px !important;
+        visibility: hidden !important;
+    }
+    #MainMenu {
+        visibility: hidden !important;
+        display: none !important;
+    }
+    footer {
+        visibility: hidden !important;
+        display: none !important;
+    }
+    div[data-testid="stDecoration"] {
+        display: none !important;
+    }
+    div[data-testid="stStatusWidget"] {
+        display: none !important;
+    }
+
+    /* Hide heading anchor link icons (🔗) */
+    .stMarkdown h1 a, .stMarkdown h2 a, .stMarkdown h3 a, .stMarkdown h4 a,
+    [data-testid="stHeaderActionElements"],
+    a.anchorjs-link,
+    a[href^="#"] {
+        display: none !important;
+    }
+
+    /* Full-width native app container */
+    div.block-container {
+        padding-top: 1.2rem !important;
+        padding-bottom: 2.5rem !important;
         max-width: 96% !important;
     }
 
+    /* --------------------------------------------------------
+       2. MODERN PILL-SHAPED APP NAVIGATION (TABS)
+       -------------------------------------------------------- */
+    div[data-testid="stTabs"] {
+        gap: 10px;
+        margin-bottom: 22px;
+    }
+    div[data-baseweb="tab-list"] {
+        background: #f1f5f9;
+        padding: 6px 8px;
+        border-radius: 9999px;
+        gap: 8px;
+        border: 1px solid #e2e8f0;
+        display: flex;
+        flex-wrap: wrap;
+        box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.04);
+    }
+    button[data-baseweb="tab"] {
+        border-radius: 9999px !important;
+        padding: 8px 20px !important;
+        font-weight: 600 !important;
+        font-size: 0.95rem !important;
+        color: #475569 !important;
+        border: none !important;
+        background: transparent !important;
+        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        white-space: nowrap !important;
+    }
+    button[data-baseweb="tab"]:hover {
+        color: #1e293b !important;
+        background: rgba(255, 255, 255, 0.8) !important;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05) !important;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] {
+        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%) !important;
+        color: #ffffff !important;
+        box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35) !important;
+        font-weight: 700 !important;
+    }
+    div[data-baseweb="tab-highlight"], div[data-baseweb="tab-border"] {
+        display: none !important;
+    }
+
+    /* --------------------------------------------------------
+       3. MODERN BUTTONS & FORM INPUTS (EDTECH PWA AESTHETIC)
+       -------------------------------------------------------- */
+    div.stButton > button, div.stDownloadButton > button, div[data-testid="stLinkButton"] > a {
+        border-radius: 10px !important;
+        font-weight: 600 !important;
+        font-size: 0.92rem !important;
+        font-family: 'Outfit', 'Inter', system-ui, sans-serif !important;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.04) !important;
+    }
+    div.stButton > button:hover, div.stDownloadButton > button:hover, div[data-testid="stLinkButton"] > a:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 16px rgba(99, 102, 241, 0.22) !important;
+    }
+    button[kind="primary"], button[data-testid="baseButton-primary"] {
+        background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%) !important;
+        border: none !important;
+        color: #ffffff !important;
+        box-shadow: 0 4px 14px rgba(79, 70, 229, 0.3) !important;
+    }
+    button[kind="primary"]:hover, button[data-testid="baseButton-primary"]:hover {
+        background: linear-gradient(135deg, #4338ca 0%, #4f46e5 100%) !important;
+    }
+
+    /* Inputs */
+    div[data-baseweb="input"] input, div[data-baseweb="textarea"] textarea {
+        border-radius: 8px !important;
+        font-size: 0.92rem !important;
+    }
+    div[data-baseweb="select"] {
+        border-radius: 8px !important;
+    }
+
+    /* --------------------------------------------------------
+       4. HERO BANNER & GLASSMORPHISM CARDS
+       -------------------------------------------------------- */
     .hero-banner {
-        background: linear-gradient(135deg, #4338ca 0%, #6366f1 50%, #a855f7 100%);
+        background: linear-gradient(135deg, #3730a3 0%, #4f46e5 50%, #7c3aed 100%);
         padding: 22px 28px;
-        border-radius: 14px;
+        border-radius: 16px;
         color: white;
-        margin-bottom: 20px;
-        box-shadow: 0 8px 24px -4px rgba(79, 70, 229, 0.25);
+        margin-bottom: 22px;
+        box-shadow: 0 10px 28px -4px rgba(79, 70, 229, 0.3);
     }
     .hero-banner h1 {
         color: #ffffff !important;
-        font-size: 2rem;
+        font-size: 1.85rem;
         font-weight: 700;
         margin-bottom: 4px;
     }
     .hero-banner p {
         color: rgba(255, 255, 255, 0.9);
-        font-size: 1rem;
+        font-size: 0.95rem;
         margin-bottom: 0;
+    }
+
+    .glass-card {
+        background: #ffffff;
+        border-radius: 14px;
+        padding: 20px 22px;
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+        margin-bottom: 16px;
+        transition: all 0.2s ease;
+    }
+    .glass-card:hover {
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.06);
     }
 
     .live-badge {
         display: inline-flex;
         align-items: center;
         gap: 8px;
-        background: #fee2e2;
-        color: #b91c1c;
-        border: 1px solid #f87171;
+        background: #dcfce7;
+        color: #15803d;
+        border: 1px solid #86efac;
         padding: 6px 16px;
         border-radius: 9999px;
         font-weight: 700;
-        font-size: 0.95rem;
+        font-size: 0.9rem;
     }
     .live-dot {
         width: 10px;
         height: 10px;
-        background-color: #ef4444;
+        background-color: #22c55e;
         border-radius: 50%;
-        animation: pulse 1.4s infinite;
+        box-shadow: 0 0 10px #22c55e;
+        animation: pulse-green 1.4s infinite;
     }
-    @keyframes pulse {
-        0% { transform: scale(0.9); opacity: 1; }
-        50% { transform: scale(1.2); opacity: 0.5; }
-        100% { transform: scale(0.9); opacity: 1; }
+    @keyframes pulse-green {
+        0% { transform: scale(0.9); opacity: 1; box-shadow: 0 0 4px #22c55e; }
+        50% { transform: scale(1.3); opacity: 0.6; box-shadow: 0 0 12px #22c55e; }
+        100% { transform: scale(0.9); opacity: 1; box-shadow: 0 0 4px #22c55e; }
     }
 
     .offline-badge {
@@ -840,24 +967,16 @@ st.markdown("""
         padding: 6px 16px;
         border-radius: 9999px;
         font-weight: 600;
-        font-size: 0.95rem;
-    }
-
-    .glass-card {
-        background: #ffffff;
-        border-radius: 12px;
-        padding: 18px 20px;
-        border: 1px solid #e2e8f0;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
-        margin-bottom: 16px;
+        font-size: 0.9rem;
     }
 
     .notice-card {
         border-left: 5px solid #6366f1;
         background: #f8fafc;
         padding: 14px 18px;
-        border-radius: 8px 12px 12px 8px;
+        border-radius: 8px 14px 14px 8px;
         margin-bottom: 12px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
     }
     .notice-important {
         border-left: 5px solid #ef4444;
@@ -872,10 +991,21 @@ st.markdown("""
         background: #ecfdf5;
     }
 
-    div.stButton > button:first-child {
-        border-radius: 8px;
-        font-weight: 600;
-        transition: all 0.2s;
+    /* Left Sidebar Native Drawer Styling */
+    section[data-testid="stSidebar"] {
+        background-color: #0f172a !important;
+        border-right: 1px solid #1e293b !important;
+    }
+    section[data-testid="stSidebar"] div.stMarkdown,
+    section[data-testid="stSidebar"] p,
+    section[data-testid="stSidebar"] span,
+    section[data-testid="stSidebar"] label {
+        color: #e2e8f0;
+    }
+    section[data-testid="stSidebar"] div.stExpander {
+        border-color: #334155 !important;
+        background: #1e293b !important;
+        border-radius: 10px !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -1679,7 +1809,8 @@ def render_class_scheduler_widget(is_admin: bool = False):
             with c_d2:
                 sc_time = st.text_input("Time (HH:MM)", value="18:00", placeholder="18:00")
 
-            sc_room = st.text_input("Room Key", value="SistersLiveClass_MasterRoom")
+            # Room key is handled automatically in the background
+            sc_room = "SistersLiveClass_MasterRoom"
             sc_notes = st.text_input("Instructions for Students", value="Camera is OFF by default. Waiting lounge is open for discussion.")
             sc_wait = st.checkbox("Allow Students to Join Waiting Lounge Early", value=True)
 
@@ -1725,25 +1856,32 @@ def render_class_scheduler_widget(is_admin: bool = False):
         else:
             for sc in active_scheduled:
                 is_sc_live = sc.get('status') == 'Live'
-                st_color = "#059669" if is_sc_live else "#0284c7"
-                st_bg = "#f0fdf4" if is_sc_live else "#f0f9ff"
-                status_badge = "🔴 LIVE NOW" if is_sc_live else "🗓️ SCHEDULED"
-                wl_badge = "🛋️ Waiting Lounge: OPEN" if sc.get('allow_waiting_room', 1) == 1 else "🔒 Waiting Lounge: Closed"
+                status_badge_bg = "#10b981" if is_sc_live else "#3b82f6"
+                status_badge_text = "🔴 LIVE NOW" if is_sc_live else "🗓️ SCHEDULED"
+                wl_open = sc.get('allow_waiting_room', 1) == 1
+                wl_badge = '<span style="color:#34d399; font-weight:600;">🛋️ Waiting Lounge: OPEN</span>' if wl_open else '<span style="color:#94a3b8; font-weight:500;">🔒 Waiting Lounge: Closed</span>'
 
                 with st.container():
                     st.markdown(f"""
-                    <div style="background:{st_bg}; border:1px solid {st_color}; border-radius:10px; padding:12px; margin-bottom:10px;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
-                            <b style="color:#1e293b; font-size:1rem;">[{sc.get('subject')}] {sc.get('topic')}</b>
-                            <span style="background:{st_color}; color:white; padding:2px 8px; border-radius:12px; font-weight:700; font-size:0.75rem;">{status_badge}</span>
+                    <div style="background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%); border: 1px solid #334155; color: #f8fafc; border-radius: 16px; padding: 18px; margin-bottom: 12px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.35);">
+                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <span style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); color: white; padding: 3px 10px; border-radius: 9999px; font-weight: 700; font-size: 0.78rem;">
+                                    {sc.get('subject') or 'Urdu / Arabic'}
+                                </span>
+                                <b style="color:#ffffff; font-size:1.05rem;">{sc.get('topic')}</b>
+                            </div>
+                            <span style="background:{status_badge_bg}; color:white; padding:3px 10px; border-radius:9999px; font-weight:700; font-size:0.75rem;">
+                                {status_badge_text}
+                            </span>
                         </div>
-                        <div style="margin-top:6px; font-size:0.88rem; color:#475569;">
-                            <b>Teacher:</b> {sc.get('teacher_name')} &nbsp;|&nbsp; 
-                            <b>Date:</b> {sc.get('scheduled_date')} at {sc.get('scheduled_time')}<br>
-                            <b>Room:</b> <code>{sc.get('room_name')}</code> &nbsp;|&nbsp; 
-                            <span style="color:#0284c7; font-weight:600;">{wl_badge}</span>
+                        <div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:12px; font-size:0.86rem; color:#94a3b8;">
+                            <div>📅 <b>Date:</b> <span style="color:#f1f5f9;">{sc.get('scheduled_date')}</span></div>
+                            <div>⏰ <b>Time:</b> <span style="color:#f1f5f9;">{sc.get('scheduled_time')}</span></div>
+                            <div>👩‍🏫 <b>Teacher:</b> <span style="color:#f1f5f9;">{sc.get('teacher_name')}</span></div>
+                            <div>{wl_badge}</div>
                         </div>
-                        {f'<div style="font-size:0.82rem; color:#64748b; margin-top:4px;"><b>Note:</b> {sc.get("notes")}</div>' if sc.get('notes') else ''}
+                        {f'<div style="font-size:0.82rem; color:#cbd5e1; margin-top:8px; padding-top:6px; border-top:1px solid #334155;">💬 <b>Note:</b> {sc.get("notes")}</div>' if sc.get('notes') else ''}
                     </div>
                     """, unsafe_allow_html=True)
 
@@ -1807,6 +1945,162 @@ def render_class_scheduler_widget(is_admin: bool = False):
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Error deleting class: {e}")
+
+def render_live_studio_hero_card(is_admin: bool = False):
+    """
+    Renders the modern 2-column Live Class Broadcast Studio top Hero Card:
+    - Left side: Live Status Badge (pulsing green dot when live / slate badge when offline),
+      quick topic input, and full-width action button (Start Live / End Live).
+    - Right side: Quick Stats mini-cards (Students, Upcoming Classes, Recordings, Pending Fees)
+      + full-width 'Open Google Drive Folder' button.
+    Technical server and room parameters are handled seamlessly in the background.
+    """
+    conn = get_db()
+    c = conn.cursor()
+
+    # Session state
+    c.execute("SELECT * FROM class_session WHERE id = 1")
+    raw_sess = c.fetchone()
+    sess = dict(raw_sess) if raw_sess else {}
+
+    is_live = bool(sess.get('is_live', 0))
+    session_topic = sess.get('topic') or "Urdu & Arabic Live Class"
+    room_name = sess.get('room_name') or "SistersLiveClass_MasterRoom"
+    server = sess.get('server') or "jitsi.riot.im"
+    teacher_notes = sess.get('teacher_notes') or ""
+    host_teacher = sess.get('host_teacher') or (st.session_state.name or "Teacher")
+    started_at = sess.get('started_at') or "Recently"
+
+    # Query Quick Stats
+    student_count = 0
+    upcoming_count = 0
+    recording_count = 0
+    pending_fee_count = 0
+    try:
+        c.execute("SELECT COUNT(*) as cnt FROM users WHERE role = 'student' AND is_active = 1")
+        r_u = c.fetchone()
+        student_count = r_u['cnt'] if r_u else 0
+
+        c.execute("SELECT COUNT(*) as cnt FROM scheduled_classes WHERE status = 'Scheduled'")
+        r_sc = c.fetchone()
+        upcoming_count = r_sc['cnt'] if r_sc else 0
+
+        c.execute("SELECT COUNT(*) as cnt FROM recordings")
+        r_rc = c.fetchone()
+        recording_count = r_rc['cnt'] if r_rc else 0
+
+        c.execute("SELECT COUNT(*) as cnt FROM fees WHERE status = 'Pending'")
+        r_fe = c.fetchone()
+        pending_fee_count = r_fe['cnt'] if r_fe else 0
+    except Exception as e:
+        print(f"Error fetching quick stats: {e}")
+
+    col_hero_left, col_hero_right = st.columns([1.35, 1.15], gap="medium")
+
+    with col_hero_left:
+        if is_live:
+            st.markdown(f"""
+            <div class="glass-card" style="border: 2px solid #22c55e; background: linear-gradient(145deg, #f0fdf4 0%, #dcfce7 100%); margin-bottom: 12px; padding: 18px 20px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <div class="live-badge">
+                        <span class="live-dot"></span>
+                        <span>🔴 BROADCAST STATUS: LIVE NOW</span>
+                    </div>
+                    <span style="font-size: 0.85rem; color: #166534; font-weight: 700;">Started: {started_at}</span>
+                </div>
+                <h3 style="margin: 10px 0 4px 0; color: #14532d; font-size: 1.25rem;">{session_topic}</h3>
+                <p style="margin: 0; color: #166534; font-size: 0.9rem;">
+                    <b>Host:</b> {host_teacher} &nbsp;|&nbsp; <b>Note:</b> {teacher_notes or 'Microphones active for student questions'}
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            with st.form(f"hero_stop_form_{'adm' if is_admin else 'tch'}"):
+                btn_stop = st.form_submit_button("🛑 End Live Class for All", type="primary", use_container_width=True)
+                if btn_stop:
+                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    try:
+                        with get_db_connection() as conn_w:
+                            conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
+                            conn_w.commit()
+                    except Exception as e:
+                        print(f"Error ending live class: {e}")
+
+                    if is_supabase_active():
+                        supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
+
+                    st.warning("Live class ended. Students returned to offline waiting status.")
+                    st.rerun()
+
+        else:
+            st.markdown("""
+            <div class="glass-card" style="border: 1px solid #e2e8f0; background: #ffffff; margin-bottom: 12px; padding: 16px 20px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <div class="offline-badge">
+                        <span style="width:9px; height:9px; border-radius:50%; background:#94a3b8; display:inline-block;"></span>
+                        <span>⚪ STUDIO READY — OFFLINE</span>
+                    </div>
+                    <span style="font-size: 0.82rem; color: #64748b; font-weight: 500;">Students waiting will join automatically</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            with st.form(f"hero_start_form_{'adm' if is_admin else 'tch'}"):
+                f_topic = st.text_input("Class Topic", value=session_topic or "Urdu Grammar / Arabic Reading Lesson 1", placeholder="e.g. Urdu Grammar Lesson 1")
+                f_notes = st.text_input("Instructions / Notes for Students", value="Camera is OFF by default. Unmute mic to ask doubts.", placeholder="e.g. Keep Tajweed book open...")
+                btn_start = st.form_submit_button("🚀 Start Live Class Now", type="primary", use_container_width=True)
+
+                if btn_start:
+                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    h_name = st.session_state.name or ("Super Admin" if is_admin else "Teacher")
+                    target_server = "jitsi.riot.im"
+                    target_room = room_name or "SistersLiveClass_MasterRoom"
+                    try:
+                        with get_db_connection() as conn_w:
+                            conn_w.execute("""
+                            UPDATE class_session 
+                            SET is_live = 1, topic = ?, room_name = ?, server = ?, teacher_notes = ?, host_teacher = ?, started_at = ?
+                            WHERE id = 1
+                            """, (f_topic.strip(), target_room, target_server, f_notes.strip(), h_name, now_str))
+                            conn_w.commit()
+                    except Exception as e:
+                        print(f"Error starting live class: {e}")
+
+                    if is_supabase_active():
+                        supabase_request("PATCH", "class_session", {
+                            "is_live": 1, "topic": f_topic.strip(), "room_name": target_room,
+                            "server": target_server, "teacher_notes": f_notes.strip(), "host_teacher": h_name, "started_at": now_str
+                        }, params="id=eq.1")
+
+                    st.session_state.jitsi_server = target_server
+                    st.success("Live broadcast started! Connected to all students.")
+                    st.rerun()
+
+    with col_hero_right:
+        st.markdown(f"""
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+            <div style="background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border: 1px solid #bfdbfe; border-radius: 12px; padding: 12px 14px; text-align: center;">
+                <div style="font-size: 1.4rem; font-weight: 800; color: #1e40af;">{student_count}</div>
+                <div style="font-size: 0.75rem; font-weight: 700; color: #3b82f6; text-transform: uppercase; margin-top: 2px;">👥 Students</div>
+            </div>
+            <div style="background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%); border: 1px solid #ddd6fe; border-radius: 12px; padding: 12px 14px; text-align: center;">
+                <div style="font-size: 1.4rem; font-weight: 800; color: #5b21b6;">{upcoming_count}</div>
+                <div style="font-size: 0.75rem; font-weight: 700; color: #8b5cf6; text-transform: uppercase; margin-top: 2px;">📅 Upcoming</div>
+            </div>
+            <div style="background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); border: 1px solid #a7f3d0; border-radius: 12px; padding: 12px 14px; text-align: center;">
+                <div style="font-size: 1.4rem; font-weight: 800; color: #065f46;">{recording_count}</div>
+                <div style="font-size: 0.75rem; font-weight: 700; color: #10b981; text-transform: uppercase; margin-top: 2px;">🎥 Recordings</div>
+            </div>
+            <div style="background: linear-gradient(135deg, #fff1f2 0%, #ffe4e6 100%); border: 1px solid #fecdd3; border-radius: 12px; padding: 12px 14px; text-align: center;">
+                <div style="font-size: 1.4rem; font-weight: 800; color: #9f1239;">{pending_fee_count}</div>
+                <div style="font-size: 0.75rem; font-weight: 700; color: #f43f5e; text-transform: uppercase; margin-top: 2px;">💰 Pending Fees</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.link_button("📂 Open Google Drive Folder", DEFAULT_DRIVE_FOLDER_URL, use_container_width=True)
+
+    return is_live, room_name, server
 
 
 # ==========================================
@@ -2041,86 +2335,8 @@ def render_admin_dashboard():
     # ADMIN TAB 2: LIVE BROADCAST STUDIO
     # ---------------------------------------------
     with tab_live:
-        st.subheader("Live Class Broadcast & Monitoring Engine")
-
-        col_st1, col_st2, col_st3 = st.columns([1.8, 1.2, 1])
-
-        with col_st1:
-            if is_live:
-                st.markdown(f"""
-                <div class="live-badge">
-                    <span class="live-dot"></span>
-                    <span>BROADCAST STATUS: LIVE NOW</span>
-                </div>
-                <div style="margin-top: 6px; color: #1e293b; font-size: 0.95rem;">
-                    <b>Host:</b> {host_teacher}<br>
-                    <b>Topic:</b> {session_topic}<br>
-                    <b>Started at:</b> {started_at}
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown("""
-                <div class="offline-badge">
-                    <span>⚪ BROADCAST STATUS: OFFLINE</span>
-                </div>
-                <div style="margin-top: 6px; color: #64748b; font-size: 0.95rem;">
-                    Class is offline. Students see an offline banner until a broadcast is started.
-                </div>
-                """, unsafe_allow_html=True)
-
-        with col_st2:
-            if not is_live:
-                with st.form("admin_start_class_form"):
-                    st.write("<b>Configure Session</b>", unsafe_allow_html=True)
-                    f_topic = st.text_input("Topic", value=session_topic or "Urdu & Arabic Live Class", key="adm_topic")
-                    f_server = st.selectbox("Jitsi Server (Embed-Friendly)", ["jitsi.riot.im", "meet.jit.si", "framatalk.org"], index=0, key="adm_server")
-                    f_room = st.text_input("Room Key", value=room_name or "SistersLiveClass_MasterRoom", key="adm_room")
-                    f_notes = st.text_input("Note for Students", value="Camera is OFF by default. Unmute mic to ask doubts.", key="adm_notes")
-                    btn_start = st.form_submit_button("🚀 Start Live Broadcast", type="primary", use_container_width=True)
-
-                    if btn_start:
-                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        h_name = st.session_state.name or "Super Admin"
-                        try:
-                            with get_db_connection() as conn_w:
-                                conn_w.execute("""
-                                UPDATE class_session 
-                                SET is_live = 1, topic = ?, room_name = ?, server = ?, teacher_notes = ?, host_teacher = ?, started_at = ?
-                                WHERE id = 1
-                                """, (f_topic, f_room, f_server, f_notes, h_name, now_str))
-                                conn_w.commit()
-                        except Exception as e:
-                            print(f"Error starting live class: {e}")
-
-                        if is_supabase_active():
-                            supabase_request("PATCH", "class_session", {
-                                "is_live": 1, "topic": f_topic, "room_name": f_room,
-                                "server": f_server, "teacher_notes": f_notes, "host_teacher": h_name, "started_at": now_str
-                            }, params="id=eq.1")
-
-                        st.session_state.jitsi_server = f_server
-                        st.success("Live broadcast started!")
-                        st.rerun()
-            else:
-                with st.form("admin_stop_class_form"):
-                    btn_stop = st.form_submit_button("🛑 End Live Class for All", type="primary", use_container_width=True)
-                    if btn_stop:
-                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        try:
-                            with get_db_connection() as conn_w:
-                                conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
-                                conn_w.commit()
-                        except Exception as e:
-                            print(f"Error ending live class: {e}")
-
-                        if is_supabase_active():
-                            supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
-
-                        st.warning("Live class ended. Students are back to offline status.")
-                        st.rerun()
-
-        with col_st3:
-            st.link_button("📂 Open Class Recordings Drive Folder (Upload Here)", DEFAULT_DRIVE_FOLDER_URL, use_container_width=True)
+        st.subheader("Live Class Broadcast Engine")
+        is_live, room_name, server = render_live_studio_hero_card(is_admin=True)
 
         st.markdown("---")
 
@@ -2132,7 +2348,7 @@ def render_admin_dashboard():
                 is_teacher=True
             )
         else:
-            st.info("💡 To begin teaching or broadcasting, configure your topic and click **'Start Live Broadcast'** above.")
+            st.info("💡 To begin teaching or broadcasting, configure your topic and click **'Start Live Class Now'** above.")
 
         st.markdown("---")
         render_quick_recording_uploader(key_suffix="admin_live_studio", title="1-Click Live Class Recording Publisher")
@@ -2157,7 +2373,7 @@ def render_admin_dashboard():
 
         col_up_btn1, col_up_btn2 = st.columns([1.5, 1])
         with col_up_btn1:
-            st.link_button("📂 Open Class Recordings Drive Folder (Upload Here)", DEFAULT_DRIVE_FOLDER_URL, type="primary", use_container_width=True)
+            st.link_button("📂 Open Google Drive Folder", DEFAULT_DRIVE_FOLDER_URL, type="primary", use_container_width=True)
         with col_up_btn2:
             st.info(f"📁 Folder ID: `{DEFAULT_DRIVE_FOLDER_ID}`")
 
@@ -2503,88 +2719,7 @@ def render_teacher_dashboard():
     # ---------------------------------------------
     with tab_live:
         st.subheader("Live Class Broadcast Engine")
-
-        col_st1, col_st2, col_st3 = st.columns([1.8, 1.2, 1])
-
-        with col_st1:
-            if is_live:
-                live_host = sess.get('host_teacher') or "Teacher"
-                st.markdown(f"""
-                <div class="live-badge">
-                    <span class="live-dot"></span>
-                    <span>BROADCAST STATUS: LIVE NOW</span>
-                </div>
-                <div style="margin-top: 6px; color: #1e293b; font-size: 0.95rem;">
-                    <b>Topic:</b> {session_topic}<br>
-                    <b>Host Teacher:</b> {live_host}<br>
-                    <b>Started at:</b> {started_at}
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown("""
-                <div class="offline-badge">
-                    <span>⚪ BROADCAST STATUS: OFFLINE</span>
-                </div>
-                <div style="margin-top: 6px; color: #64748b; font-size: 0.95rem;">
-                    Class is offline. Students see an offline banner until you start the broadcast.
-                </div>
-                """, unsafe_allow_html=True)
-
-        with col_st2:
-            if not is_live:
-                with st.form("start_class_form"):
-                    st.write("<b>Configure Session</b>", unsafe_allow_html=True)
-                    f_topic = st.text_input("Topic", value=session_topic or "Urdu & Arabic Live Class")
-                    f_server = st.selectbox("Jitsi Server (Embed-Friendly)", ["jitsi.riot.im", "meet.jit.si", "framatalk.org"], index=0)
-                    f_room = st.text_input("Room Key", value=room_name or "SistersLiveClass_MasterRoom")
-
-                    f_notes = st.text_input("Note for Students", value="Camera is OFF by default. Unmute mic to ask doubts.")
-                    btn_start = st.form_submit_button("🚀 Start Live Broadcast", type="primary", use_container_width=True)
-
-                    if btn_start:
-                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        host_name = st.session_state.name or "Teacher"
-                        try:
-                            with get_db_connection() as conn_w:
-                                conn_w.execute("""
-                                UPDATE class_session 
-                                SET is_live = 1, topic = ?, room_name = ?, server = ?, teacher_notes = ?, started_at = ?, host_teacher = ?
-                                WHERE id = 1
-                                """, (f_topic, f_room, f_server, f_notes, now_str, host_name))
-                                conn_w.commit()
-                        except Exception as e:
-                            print(f"Error starting live class: {e}")
-
-                        if is_supabase_active():
-                            supabase_request("PATCH", "class_session", {
-                                "is_live": 1, "topic": f_topic, "room_name": f_room,
-                                "server": f_server, "teacher_notes": f_notes, "started_at": now_str,
-                                "host_teacher": host_name
-                            }, params="id=eq.1")
-
-                        st.session_state.jitsi_server = f_server
-                        st.success("Live broadcast started!")
-                        st.rerun()
-            else:
-                with st.form("stop_class_form"):
-                    btn_stop = st.form_submit_button("🛑 End Live Class for All", type="primary", use_container_width=True)
-                    if btn_stop:
-                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        try:
-                            with get_db_connection() as conn_w:
-                                conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
-                                conn_w.commit()
-                        except Exception as e:
-                            print(f"Error ending live class: {e}")
-
-                        if is_supabase_active():
-                            supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
-
-                        st.warning("Live class ended. Students are back to offline status.")
-                        st.rerun()
-
-        with col_st3:
-            st.link_button("📂 Open Class Recordings Drive Folder (Upload Here)", DEFAULT_DRIVE_FOLDER_URL, use_container_width=True)
+        is_live, room_name, server = render_live_studio_hero_card(is_admin=False)
 
         st.markdown("---")
 
@@ -2597,7 +2732,7 @@ def render_teacher_dashboard():
                 is_teacher=True
             )
         else:
-            st.info("💡 To begin teaching, configure your topic and click **'Start Live Broadcast'** above.")
+            st.info("💡 To begin teaching, configure your topic and click **'Start Live Class Now'** above.")
 
         st.markdown("---")
         render_quick_recording_uploader(key_suffix="teacher_live_studio", title="1-Click Live Class Recording Publisher")
@@ -2624,7 +2759,7 @@ def render_teacher_dashboard():
         # Quick Actions & Direct Auto-Uploader
         col_up_btn1, col_up_btn2 = st.columns([1.5, 1])
         with col_up_btn1:
-            st.link_button("📂 Open Class Recordings Drive Folder (Upload Here)", DEFAULT_DRIVE_FOLDER_URL, type="primary", use_container_width=True)
+            st.link_button("📂 Open Google Drive Folder", DEFAULT_DRIVE_FOLDER_URL, type="primary", use_container_width=True)
             st.caption("Click to open the Google Drive folder in a new tab and drop your downloaded recording files directly.")
         with col_up_btn2:
             st.info(f"📁 Folder ID: `{DEFAULT_DRIVE_FOLDER_ID}`")
@@ -3502,10 +3637,12 @@ def main():
 
     with st.sidebar:
         st.markdown("""
-        <div style="text-align: center; padding: 10px 0;">
-            <div style="font-size: 2.8rem; margin-bottom: 2px;">🎓</div>
-            <h2 style="margin:0; font-size:1.25rem;">Sister's Live Academy</h2>
-            <p style="color:#64748b; font-size:0.85rem; margin-top:2px;">Live Coaching Portal</p>
+        <div style="text-align: center; padding: 12px 0 16px 0;">
+            <div style="display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; border-radius: 14px; background: linear-gradient(135deg, #4f46e5, #7c3aed); font-size: 1.8rem; box-shadow: 0 8px 16px rgba(79, 70, 229, 0.35); margin-bottom: 8px;">
+                🎓
+            </div>
+            <h2 style="margin: 0; font-size: 1.2rem; font-weight: 800; color: #f8fafc; letter-spacing: -0.3px;">Sister's Live Academy</h2>
+            <p style="color: #94a3b8; font-size: 0.8rem; margin: 3px 0 0 0; font-weight: 500;">Online Coaching & Live Classroom</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -3515,11 +3652,24 @@ def main():
             'student': '🎓 Student'
         }.get(st.session_state.role, str(st.session_state.role).capitalize())
 
+        role_icon = {
+            'admin': '👑',
+            'teacher': '👩‍🏫',
+            'student': '🎓'
+        }.get(st.session_state.role, '👤')
+
         st.markdown(f"""
-        <div style="background:#f1f5f9; padding:12px; border-radius:10px; margin-bottom:15px;">
-            <div style="font-size:0.75rem; color:#64748b; text-transform:uppercase; font-weight:700;">Active Account</div>
-            <div style="font-weight:700; color:#1e293b; font-size:1rem;">{st.session_state.name}</div>
-            <div style="font-size:0.85rem; color:#4f46e5; font-weight:600;">{role_label} (@{st.session_state.username})</div>
+        <div style="background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%); border: 1px solid #334155; border-radius: 14px; padding: 14px 16px; margin-bottom: 16px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="width: 42px; height: 42px; border-radius: 10px; background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); display: flex; align-items: center; justify-content: center; font-size: 1.35rem; color: white; box-shadow: 0 4px 10px rgba(99, 102, 241, 0.35); flex-shrink: 0;">
+                    {role_icon}
+                </div>
+                <div style="overflow: hidden;">
+                    <div style="font-weight: 700; color: #ffffff; font-size: 0.95rem; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; overflow: hidden;">{st.session_state.name}</div>
+                    <div style="font-size: 0.78rem; color: #a5b4fc; font-weight: 600; margin-top: 2px;">{role_label}</div>
+                    <div style="font-size: 0.72rem; color: #94a3b8; font-family: monospace;">@{st.session_state.username}</div>
+                </div>
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
