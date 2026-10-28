@@ -406,6 +406,20 @@ st.markdown("""
 # ==========================================
 # 5. JITSI MEET EXTERNAL API & IN-APP FULLSCREEN CLASSROOM
 # ==========================================
+def build_jitsi_url(server: str, room_name: str, display_name: str = "", is_teacher: bool = False) -> str:
+    """Helper to construct direct Jitsi URL if needed anywhere"""
+    safe_name = urllib.parse.quote(display_name) if display_name else "User"
+    audio_param = "false" if is_teacher else "true"
+    server_clean = server.replace("https://", "").replace("http://", "").strip("/") if server else "jitsi.riot.im"
+    return (
+        f"https://{server_clean}/{room_name}"
+        f"#userInfo.displayName=\"{safe_name}\""
+        f"&config.prejoinPageEnabled=false"
+        f"&config.startWithVideoMuted=true"
+        f"&config.startWithAudioMuted={audio_param}"
+        f"&config.disableDeepLinking=true"
+    )
+
 def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_teacher: bool):
     """
     Renders Jitsi Meet using the official JitsiMeetExternalAPI (external_api.js) inside st.components.v1.html.
@@ -428,8 +442,9 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
         ])
     else:
         tb_buttons = json.dumps([
-            'microphone', 'camera', 'chat', 'raisehand', 'tileview', 'hangup'
+            'microphone', 'camera', 'chat', 'raisehand', 'tileview', 'fullscreen', 'hangup'
         ])
+
 
     topbar_right = """
         <div style="display:flex; align-items:center; gap:8px;">
@@ -1336,8 +1351,6 @@ def render_student_dashboard():
                 <p style="margin: 0; color: #475569;"><b>Teacher's Instructions:</b> {teacher_notes}</p>
             </div>
             """, unsafe_allow_html=True)
-
-            student_jitsi_url = build_jitsi_url(server, room_name, f"{st.session_state.name} (Student)", is_teacher=False)
 
             if not st.session_state.live_joined:
                 col_j1, col_j2, col_j3 = st.columns([1, 2, 1])
