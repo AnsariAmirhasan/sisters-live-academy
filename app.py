@@ -1169,47 +1169,48 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 let stream = null;
                 let isAudioOnly = false;
 
-                // 1. Desktop: Try screen capture if getDisplayMedia is supported
-                if (!isMobileDevice() && navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function') {{
+                // Detect mobile or touch browser or missing getDisplayMedia
+                const isMobileOrTouch = (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) ||
+                                        ('ontouchstart' in window) ||
+                                        (window.innerWidth <= 768) ||
+                                        (!navigator.mediaDevices) ||
+                                        (typeof navigator.mediaDevices.getDisplayMedia !== 'function');
+
+                if (isMobileOrTouch) {{
+                    // Mobile Chrome: Record live audio lecture cleanly without getDisplayMedia
+                    try {{
+                        if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') {{
+                            stream = await navigator.mediaDevices.getUserMedia({{
+                                audio: {{ echoCancellation: true, noiseSuppression: true }}
+                            }});
+                            isAudioOnly = true;
+                        }}
+                    }} catch (mErr) {{
+                        console.error("Mobile mic recording error:", mErr);
+                        showClassroomNotice("Microphone permission needed: " + mErr.message, true);
+                        return;
+                    }}
+                }} else {{
+                    // Desktop browser with getDisplayMedia
                     try {{
                         stream = await navigator.mediaDevices.getDisplayMedia({{
                             video: {{ cursor: "always" }},
                             audio: true
                         }});
                     }} catch (dispErr) {{
-                        console.warn("getDisplayMedia cancelled or unavailable:", dispErr);
-                        if (dispErr.name === 'NotAllowedError') {{
-                            showClassroomNotice("Screen recording was cancelled.", true);
+                        console.warn("Desktop getDisplayMedia cancelled, falling back to mic:", dispErr);
+                        try {{
+                            stream = await navigator.mediaDevices.getUserMedia({{ audio: true }});
+                            isAudioOnly = true;
+                        }} catch (audErr) {{
+                            showClassroomNotice("Recording cancelled.", true);
                             return;
                         }}
                     }}
                 }}
 
-                // 2. Mobile Phone or Desktop fallback: Use getUserMedia (Audio + Camera / Voice)
                 if (!stream) {{
-                    try {{
-                        if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') {{
-                            try {{
-                                stream = await navigator.mediaDevices.getUserMedia({{
-                                    audio: {{ echoCancellation: true, noiseSuppression: true }},
-                                    video: {{ facingMode: {{ ideal: "environment" }} }}
-                                }});
-                            }} catch (vidErr) {{
-                                stream = await navigator.mediaDevices.getUserMedia({{
-                                    audio: {{ echoCancellation: true, noiseSuppression: true }}
-                                }});
-                                isAudioOnly = true;
-                            }}
-                        }}
-                    }} catch (mediaErr) {{
-                        console.error("getUserMedia error:", mediaErr);
-                        showClassroomNotice("Microphone permission required for class recording: " + mediaErr.message, true);
-                        return;
-                    }}
-                }}
-
-                if (!stream) {{
-                    showClassroomNotice("Recording is not supported on this browser.", true);
+                    showClassroomNotice("Recording device not accessible on this browser.", true);
                     return;
                 }}
 
@@ -2425,80 +2426,122 @@ def render_live_studio_hero_card(is_admin: bool = False, show_stop_form: bool = 
 
     return is_live, room_name, server
 
+LIVE_BOARD_IMAGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_board_image.png")
+
+def render_live_board_manager(is_teacher: bool = False):
+    """
+    In-Browser Mobile Lesson & Book Sharing:
+    Allows Teacher to upload or photo-capture an Urdu/Arabic book page or notes during live class,
+    saving it to live_board_image.png which automatically renders above the video player for all students.
+    """
+    if is_teacher:
+        with st.expander("📖 Share Urdu/Arabic Book Page or Image to All Students (Mobile Friendly)", expanded=False):
+            st.caption("📱 **Mobile Teaching Tip:** Tap below to capture a live photo of your Qaida, Quran, or book with your phone camera. It displays live above the video for all students!")
+            board_img_file = st.file_uploader(
+                "Upload or Capture Book Page (Photo)",
+                type=["png", "jpg", "jpeg", "webp"],
+                key="live_board_uploader_file",
+                help="Camera photo or scanned book page"
+            )
+            if board_img_file is not None:
+                try:
+                    with open(LIVE_BOARD_IMAGE_PATH, "wb") as f_board:
+                        f_board.write(board_img_file.getbuffer())
+                    st.success("✅ Book page shared to all students' screens live!")
+                except Exception as e:
+                    st.error(f"Error saving book page: {e}")
+
+            if os.path.exists(LIVE_BOARD_IMAGE_PATH):
+                col_b1, col_b2 = st.columns([3, 1], gap="small")
+                with col_b1:
+                    st.image(LIVE_BOARD_IMAGE_PATH, caption="📖 Currently Shared Lesson Page (Visible to All Students)", use_container_width=True)
+                with col_b2:
+                    if st.button("🗑️ Remove Shared Book Page", key="clear_live_board_btn", type="secondary", use_container_width=True):
+                        try:
+                            if os.path.exists(LIVE_BOARD_IMAGE_PATH):
+                                os.remove(LIVE_BOARD_IMAGE_PATH)
+                            st.success("Page cleared.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error removing: {e}")
+    else:
+        # Student Live Screen View
+        if os.path.exists(LIVE_BOARD_IMAGE_PATH):
+            st.markdown("""
+            <div style="background: #f8fafc; border: 2px solid #6366f1; border-radius: 12px; padding: 10px 14px; margin-bottom: 8px; text-align: center;">
+                <b style="color: #4338ca; font-size: 0.95rem;">📖 Teacher's Shared Lesson / Book Page</b>
+            </div>
+            """, unsafe_allow_html=True)
+            st.image(LIVE_BOARD_IMAGE_PATH, caption="Live Book / Qaida Page Shared by Teacher", use_container_width=True)
+            st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
+
 def render_top_quick_actions_bar():
     """
-    Renders a persistent, mobile-friendly Top Account Bar right at the top of the main screen
+    Renders a visible, bordered Top Account Bar right at the top of the main screen
     giving instant 1-tap access to Change Password and Log Out without opening the sidebar.
     """
-    role_label = "👑 Super Admin" if st.session_state.role == 'admin' else ("👩‍🏫 Teacher" if st.session_state.role == 'teacher' else "🎓 Student")
-    display_user = f"{st.session_state.name} (@{st.session_state.username})" if st.session_state.name else f"@{st.session_state.username}"
+    with st.container(border=True):
+        col1, col2, col3 = st.columns([2, 1, 1], gap="small")
+        with col1:
+            st.markdown(f"**👤 {st.session_state.name}** (`@{st.session_state.username}`)")
+        with col2:
+            with st.popover("🔑 Change Password", use_container_width=True):
+                st.markdown(f"**Change Password (@{st.session_state.username})**")
+                with st.form("topbar_pwd_form"):
+                    curr_pwd = st.text_input("Current Password", type="password", key="tb_curr_pwd")
+                    new_pwd = st.text_input("New Password", type="password", key="tb_new_pwd")
+                    confirm_pwd = st.text_input("Confirm New Password", type="password", key="tb_conf_pwd")
+                    if st.form_submit_button("Save Password", type="primary", use_container_width=True):
+                        if not curr_pwd or not new_pwd:
+                            st.error("Please fill both password fields.")
+                        elif len(new_pwd.strip()) < 4:
+                            st.error("New password must be at least 4 characters long.")
+                        elif new_pwd != confirm_pwd:
+                            st.error("New password and confirm password do not match.")
+                        else:
+                            try:
+                                with get_db_connection() as conn_chk:
+                                    c_chk = conn_chk.cursor()
+                                    c_chk.execute("SELECT password, password_hash FROM users WHERE username = ?", (st.session_state.username,))
+                                    u_row = c_chk.fetchone()
 
-    col_u, col_pwd, col_out = st.columns([2, 1, 1], gap="small")
-    with col_u:
-        st.markdown(f"""
-        <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:6px 12px; display:flex; align-items:center; gap:8px; box-shadow:0 1px 3px rgba(0,0,0,0.04); min-height:44px; box-sizing:border-box;">
-            <span style="font-weight:700; color:#1e293b; font-size:0.92rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">👤 {display_user}</span>
-            <span style="font-size:0.75rem; background:#e0e7ff; color:#4338ca; padding:2px 8px; border-radius:12px; font-weight:700; white-space:nowrap;">{role_label}</span>
-        </div>
-        """, unsafe_allow_html=True)
-    with col_pwd:
-        with st.popover("🔑 Change Password", use_container_width=True):
-            st.markdown(f"**Change Password (@{st.session_state.username})**")
-            with st.form("topbar_pwd_form"):
-                curr_pwd = st.text_input("Current Password", type="password", key="tb_curr_pwd")
-                new_pwd = st.text_input("New Password", type="password", key="tb_new_pwd")
-                confirm_pwd = st.text_input("Confirm New Password", type="password", key="tb_conf_pwd")
-                if st.form_submit_button("Save Password", type="primary", use_container_width=True):
-                    if not curr_pwd or not new_pwd:
-                        st.error("Please fill both password fields.")
-                    elif len(new_pwd.strip()) < 4:
-                        st.error("New password must be at least 4 characters long.")
-                    elif new_pwd != confirm_pwd:
-                        st.error("New password and confirm password do not match.")
-                    else:
-                        try:
-                            with get_db_connection() as conn_chk:
-                                c_chk = conn_chk.cursor()
-                                c_chk.execute("SELECT password, password_hash FROM users WHERE username = ?", (st.session_state.username,))
-                                u_row = c_chk.fetchone()
-
-                            if not u_row:
-                                st.error("User record not found.")
-                            else:
-                                raw_p = u_row['password'] if 'password' in u_row.keys() else ''
-                                h_p = u_row['password_hash']
-                                curr_h = hash_password(curr_pwd)
-
-                                is_match = (raw_p and curr_pwd == raw_p) or (curr_h == h_p)
-                                if not is_match:
-                                    st.error("Incorrect current password.")
+                                if not u_row:
+                                    st.error("User record not found.")
                                 else:
-                                    new_h = hash_password(new_pwd.strip())
-                                    with get_db_connection() as conn_w:
-                                        conn_w.execute("""
-                                        UPDATE users SET password = ?, password_hash = ? WHERE username = ?
-                                        """, (new_pwd.strip(), new_h, st.session_state.username))
-                                        conn_w.commit()
+                                    raw_p = u_row['password'] if 'password' in u_row.keys() else ''
+                                    h_p = u_row['password_hash']
+                                    curr_h = hash_password(curr_pwd)
 
-                                    if is_supabase_active():
-                                        supabase_request("PATCH", "users", {
-                                            "password": new_pwd.strip(),
-                                            "password_hash": new_h
-                                        }, params=f"username=eq.{st.session_state.username}")
+                                    is_match = (raw_p and curr_pwd == raw_p) or (curr_h == h_p)
+                                    if not is_match:
+                                        st.error("Incorrect current password.")
+                                    else:
+                                        new_h = hash_password(new_pwd.strip())
+                                        with get_db_connection() as conn_w:
+                                            conn_w.execute("""
+                                            UPDATE users SET password = ?, password_hash = ? WHERE username = ?
+                                            """, (new_pwd.strip(), new_h, st.session_state.username))
+                                            conn_w.commit()
 
-                                    st.success("✅ Password updated successfully!")
-                        except Exception as e:
-                            st.error(f"Error updating password: {e}")
-    with col_out:
-        if st.button("🚪 Log Out", key="main_top_logout_btn", use_container_width=True):
-            st.session_state.logged_in = False
-            st.session_state.username = None
-            st.session_state.role = None
-            st.session_state.name = None
-            st.session_state.live_joined = False
-            st.session_state.joined_live_class = False
-            st.rerun()
-    st.markdown("<div style='margin-bottom: 12px;'></div>", unsafe_allow_html=True)
+                                        if is_supabase_active():
+                                            supabase_request("PATCH", "users", {
+                                                "password": new_pwd.strip(),
+                                                "password_hash": new_h
+                                            }, params=f"username=eq.{st.session_state.username}")
+
+                                        st.success("✅ Password updated successfully!")
+                            except Exception as e:
+                                st.error(f"Error updating password: {e}")
+        with col3:
+            if st.button("🚪 Log Out", key="mobile_top_logout", type="primary", use_container_width=True):
+                st.session_state.logged_in = False
+                st.session_state.username = None
+                st.session_state.role = None
+                st.session_state.name = None
+                st.session_state.live_joined = False
+                st.session_state.joined_live_class = False
+                st.rerun()
+    st.markdown("<div style='margin-bottom: 8px;'></div>", unsafe_allow_html=True)
 
 
 # ==========================================
@@ -2764,6 +2807,9 @@ def render_admin_dashboard():
                         st.rerun()
 
             st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
+
+            # Mobile In-Browser Lesson / Book Sharing
+            render_live_board_manager(is_teacher=True)
 
             # 2. Render the Live Classroom video player FIRST
             render_jitsi_classroom(
@@ -3202,6 +3248,9 @@ def render_teacher_dashboard():
                         st.rerun()
 
             st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
+
+            # Mobile In-Browser Lesson / Book Sharing
+            render_live_board_manager(is_teacher=True)
 
             # 2. Render Live Classroom video player FIRST
             render_jitsi_classroom(
@@ -3806,6 +3855,9 @@ def render_student_dashboard():
                             st.session_state.in_waiting_lounge = False
                             st.rerun()
 
+                # In-Browser Shared Book Page Display
+                render_live_board_manager(is_teacher=False)
+
                 # Render embedded room for pre-class student discussion
                 wl_room = next_class.get('room_name') or room_name
                 render_jitsi_classroom(
@@ -3928,8 +3980,10 @@ def render_student_dashboard():
                             st.session_state.joined_live_class = True
                             st.rerun()
             else:
-
                 st.success("✅ Attendance recorded! You are in the live room.")
+
+                # In-Browser Shared Book Page Display
+                render_live_board_manager(is_teacher=False)
 
                 # Active in-app classroom embed with fullscreen button (no external redirects)
                 render_jitsi_classroom(
