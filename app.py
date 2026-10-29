@@ -1130,191 +1130,62 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
         <div class="classroom-topbar">
             <button id="fs-toggle-btn" class="topbar-btn fs-btn" onclick="toggleFullScreen()">⛶ Full Screen</button>
             <button id="whiteboard-btn" class="topbar-btn wb-btn" onclick="toggleWhiteboard()">✏️ Whiteboard</button>
-            <button id="cam-toggle-btn" class="topbar-btn cam-btn" onclick="switchCamera()">📷 Book / Back Cam</button>
-            <button id="share-screen-btn" class="topbar-btn share-btn" onclick="handleScreenShare()">📱 Screen Share</button>
-            <button id="rec-toggle-btn" class="topbar-btn rec-btn topbar-full-width" onclick="toggleRecording()">⏺️ Record Class</button>
+            <button id="cam-toggle-btn" class="topbar-btn cam-btn" onclick="switchCamera()">📷 Camera Flip</button>
+            <button id="share-screen-btn" class="topbar-btn share-btn" onclick="handleScreenShare()">📖 Share Book / Screen</button>
+            <button id="rec-toggle-btn" class="topbar-btn rec-btn topbar-full-width" onclick="toggleRecording()">⏺️ Record Class (Video + Voice)</button>
         </div>
         <div id="classroom-notice-toast" style="display:none; padding:8px 12px; margin:4px 8px; border-radius:6px; font-size:0.83rem; color:white; font-weight:600; text-align:center;"></div>
         <div id="rec-status-bar" style="display:none; padding:6px 10px; background:#0f172a; border-bottom:1px solid #334155; justify-content:center; align-items:center; gap:8px;">
             <span style="width:10px; height:10px; border-radius:50%; background:#ef4444; display:inline-block;"></span>
             <span id="rec-timer" style="font-family:monospace; color:#38bdf8; font-weight:bold; font-size:0.92rem;">00:00:00</span>
-            <span style="color:#94a3b8; font-size:0.8rem; font-weight:500;">Recording Active (Click 'Stop' to save)</span>
+            <span style="color:#94a3b8; font-size:0.8rem; font-weight:500;">Recording Video + Audio Active (Click 'Stop' to save)</span>
         </div>
         """
     else:
         topbar_html = """
         <div class="classroom-topbar" style="display:flex; justify-content:space-between; align-items:center;">
             <button id="fs-toggle-btn" class="topbar-btn fs-btn" onclick="toggleFullScreen()">⛶ Full Screen</button>
-            <span style="color:#94a3b8; font-size:0.85rem; font-weight:500;">🎥 Live Audio/Video Stream Active</span>
+            <span style="color:#94a3b8; font-size:0.85rem; font-weight:500;">🎥 Live Audio & Video Classroom Active</span>
         </div>
         <div id="classroom-notice-toast" style="display:none; padding:8px 12px; margin:4px 8px; border-radius:6px; font-size:0.83rem; color:white; font-weight:600; text-align:center;"></div>
         """
 
-    recorder_script = f"""
-        let mediaRecorder = null;
-        let recordedChunks = [];
-        let timerInterval = null;
-        let recSeconds = 0;
-        let isRecording = false;
+    whiteboard_html = """
+    <!-- Built-in HTML5 Interactive Teaching Whiteboard & Lesson Presenter -->
+    <input type="file" id="board-image-loader" accept="image/*" style="display:none;" onchange="loadBookImageToCanvas(event)">
+    <div id="whiteboard-panel" style="display:none;">
+        <div class="wb-toolbar">
+            <div class="wb-group">
+                <span style="font-size:0.75rem; font-weight:700; color:#94a3b8;">Pen:</span>
+                <button type="button" class="wb-color-btn active" style="background:#ffffff;" onclick="setPenColor('#ffffff', this)"></button>
+                <button type="button" class="wb-color-btn" style="background:#facc15;" onclick="setPenColor('#facc15', this)"></button>
+                <button type="button" class="wb-color-btn" style="background:#ef4444;" onclick="setPenColor('#ef4444', this)"></button>
+                <button type="button" class="wb-color-btn" style="background:#22c55e;" onclick="setPenColor('#22c55e', this)"></button>
+                <button type="button" id="eraser-btn" class="wb-tool-btn" onclick="toggleEraser()">🧹 Eraser</button>
+            </div>
+            <div class="wb-group">
+                <span style="font-size:0.75rem; font-weight:700; color:#94a3b8;">Size:</span>
+                <button type="button" class="wb-tool-btn" onclick="setLineWidth(3, this)">Thin</button>
+                <button type="button" class="wb-tool-btn active" onclick="setLineWidth(6, this)">Med</button>
+                <button type="button" class="wb-tool-btn" onclick="setLineWidth(14, this)">Thick</button>
+            </div>
+            <div class="wb-group">
+                <button type="button" class="wb-tool-btn" style="background:#2563eb; color:white;" onclick="triggerBookImagePicker()">📖 Load Book Page</button>
+                <button type="button" class="wb-tool-btn" style="background:#475569; color:white;" onclick="clearCanvasDrawing()">🗑️ Clear</button>
+                <button type="button" class="wb-tool-btn" style="background:#dc2626; color:white;" onclick="toggleWhiteboard()">✖️ Close</button>
+            </div>
+        </div>
+        <div class="wb-canvas-container">
+            <canvas id="teaching-canvas" width="1280" height="720"></canvas>
+        </div>
+    </div>
+    """ if is_teacher else """
+    <div style="display:none;">
+        <canvas id="teaching-canvas" width="1280" height="720"></canvas>
+    </div>
+    """
 
-        function formatTimer(s) {{
-            const h = String(Math.floor(s / 3600)).padStart(2, '0');
-            const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
-            const sc = String(s % 60).padStart(2, '0');
-            return `${{h}}:${{m}}:${{sc}}`;
-        }}
-
-        async function toggleRecording() {{
-            if (!isRecording) {{
-                let stream = null;
-                let isAudioOnly = false;
-
-                // Detect mobile or touch browser or missing getDisplayMedia
-                const isMobileOrTouch = (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) ||
-                                        ('ontouchstart' in window) ||
-                                        (window.innerWidth <= 768) ||
-                                        (!navigator.mediaDevices) ||
-                                        (typeof navigator.mediaDevices.getDisplayMedia !== 'function');
-
-                if (isMobileOrTouch) {{
-                    // Mobile Chrome: Record live audio lecture cleanly without getDisplayMedia
-                    try {{
-                        if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') {{
-                            stream = await navigator.mediaDevices.getUserMedia({{
-                                audio: {{ echoCancellation: true, noiseSuppression: true }}
-                            }});
-                            isAudioOnly = true;
-                        }}
-                    }} catch (mErr) {{
-                        console.error("Mobile mic recording error:", mErr);
-                        showClassroomNotice("Microphone permission needed: " + mErr.message, true);
-                        return;
-                    }}
-                }} else {{
-                    // Desktop browser with getDisplayMedia
-                    try {{
-                        stream = await navigator.mediaDevices.getDisplayMedia({{
-                            video: {{ cursor: "always" }},
-                            audio: true
-                        }});
-                    }} catch (dispErr) {{
-                        console.warn("Desktop getDisplayMedia cancelled, falling back to mic:", dispErr);
-                        try {{
-                            stream = await navigator.mediaDevices.getUserMedia({{ audio: true }});
-                            isAudioOnly = true;
-                        }} catch (audErr) {{
-                            showClassroomNotice("Recording cancelled.", true);
-                            return;
-                        }}
-                    }}
-                }}
-
-                if (!stream) {{
-                    showClassroomNotice("Recording device not accessible on this browser.", true);
-                    return;
-                }}
-
-                try {{
-                    recordedChunks = [];
-                    let options = {{}};
-                    if (isAudioOnly) {{
-                        if (typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported('audio/webm')) {{
-                            options = {{ mimeType: 'audio/webm' }};
-                        }} else if (typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported('audio/mp4')) {{
-                            options = {{ mimeType: 'audio/mp4' }};
-                        }}
-                    }} else {{
-                        if (typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported('video/webm')) {{
-                            options = {{ mimeType: 'video/webm' }};
-                        }} else if (typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported('video/mp4')) {{
-                            options = {{ mimeType: 'video/mp4' }};
-                        }}
-                    }}
-
-                    try {{
-                        mediaRecorder = new MediaRecorder(stream, options);
-                    }} catch (e) {{
-                        mediaRecorder = new MediaRecorder(stream);
-                    }}
-
-                    mediaRecorder.ondataavailable = (e) => {{
-                        if (e.data && e.data.size > 0) recordedChunks.push(e.data);
-                    }};
-
-                    mediaRecorder.onstop = () => {{
-                        clearInterval(timerInterval);
-                        isRecording = false;
-                        const recBtn = document.getElementById('rec-toggle-btn');
-                        if (recBtn) {{
-                            recBtn.innerHTML = "⏺️ Record Class";
-                            recBtn.className = "topbar-btn rec-btn topbar-full-width";
-                        }}
-                        const statusBar = document.getElementById('rec-status-bar');
-                        if (statusBar) statusBar.style.display = 'none';
-
-                        try {{
-                            stream.getTracks().forEach(t => t.stop());
-                        }} catch(e) {{}}
-
-                        if (recordedChunks.length > 0) {{
-                            const mime = mediaRecorder.mimeType || (isAudioOnly ? 'audio/webm' : 'video/webm');
-                            const blob = new Blob(recordedChunks, {{ type: mime }});
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement('a');
-                            a.style.display = 'none';
-                            a.href = url;
-                            const d = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-                            const ext = mime.includes('mp4') ? (isAudioOnly ? 'm4a' : 'mp4') : (isAudioOnly ? 'weba' : 'webm');
-                            a.download = `Sisters_Academy_Class_${{d}}.${{ext}}`;
-                            document.body.appendChild(a);
-                            a.click();
-                            setTimeout(() => {{
-                                document.body.removeChild(a);
-                                window.URL.revokeObjectURL(url);
-                            }}, 500);
-                            showClassroomNotice("✅ Class recording saved to your Downloads folder!", false);
-                        }}
-                    }};
-
-                    stream.getTracks().forEach(track => {{
-                        track.onended = () => {{
-                            if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
-                        }};
-                    }});
-
-                    mediaRecorder.start(1000);
-                    isRecording = true;
-
-                    const recBtn = document.getElementById('rec-toggle-btn');
-                    if (recBtn) {{
-                        recBtn.innerHTML = "⏹️ Stop & Save Recording";
-                        recBtn.className = "topbar-btn rec-btn-stop topbar-full-width";
-                    }}
-                    const statusBar = document.getElementById('rec-status-bar');
-                    if (statusBar) statusBar.style.display = 'flex';
-
-                    recSeconds = 0;
-                    timerInterval = setInterval(() => {{
-                        recSeconds++;
-                        const timerEl = document.getElementById('rec-timer');
-                        if (timerEl) timerEl.innerText = formatTimer(recSeconds);
-                    }}, 1000);
-
-                    if (isMobileDevice()) {{
-                        showClassroomNotice(isAudioOnly ? "🎙️ Mobile Voice Class Recording active! Tap '⏹️ Stop & Save' when done." : "📹 Mobile Class Camera & Audio Recording active! Tap '⏹️ Stop & Save' when done.", false);
-                    }}
-                }} catch (recInitErr) {{
-                    showClassroomNotice("Recording error: " + recInitErr.message, true);
-                }}
-            }} else {{
-                if (mediaRecorder && mediaRecorder.state !== 'inactive') {{
-                    mediaRecorder.stop();
-                }}
-            }}
-        }}
-    """ if is_teacher else ""
-
-    component_height = 730 if is_teacher else 630
+    component_height = 720 if is_teacher else 630
 
     html_code = f"""
     <!DOCTYPE html>
@@ -1332,18 +1203,54 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 height: 100%;
                 background: #0f172a;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                overflow: hidden;
+                overflow-x: hidden;
             }}
-            #classroom-wrapper {{
+            #classroom-master-wrapper {{
+                position: relative;
                 width: 100%;
-                height: 100%;
+                min-height: 100%;
                 display: flex;
                 flex-direction: column;
                 background: #0f172a;
                 border-radius: 12px;
                 overflow: hidden;
                 border: 1px solid #334155;
-                transition: all 0.3s ease;
+                transition: all 0.25s ease;
+            }}
+            #classroom-master-wrapper.is-fullscreen {{
+                position: fixed !important;
+                top: 0 !important;
+                left: 0 !important;
+                width: 100vw !important;
+                height: 100vh !important;
+                max-width: 100vw !important;
+                max-height: 100vh !important;
+                border-radius: 0 !important;
+                z-index: 999999 !important;
+                border: none !important;
+                overflow-y: auto !important;
+            }}
+            #floating-fs-btn {{
+                display: none;
+                position: fixed;
+                top: 14px;
+                right: 14px;
+                z-index: 99999999;
+                background: #dc2626;
+                color: #ffffff;
+                font-size: 0.86rem;
+                font-weight: 700;
+                padding: 10px 18px;
+                border-radius: 999px;
+                border: 2px solid #ffffff;
+                box-shadow: 0 4px 20px rgba(0,0,0,0.65);
+                cursor: pointer;
+                align-items: center;
+                gap: 6px;
+                transition: transform 0.15s ease;
+            }}
+            #floating-fs-btn:active {{
+                transform: scale(0.95);
             }}
             .classroom-topbar {{
                 background: #1e293b;
@@ -1354,7 +1261,7 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 gap: 8px;
                 width: 100%;
                 box-sizing: border-box;
-                z-index: 10;
+                z-index: 20;
             }}
             .topbar-full-width {{
                 grid-column: span 2;
@@ -1374,8 +1281,8 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             }}
             .topbar-btn {{
                 border: none;
-                padding: 8px 10px;
-                border-radius: 6px;
+                padding: 8px 12px;
+                border-radius: 8px;
                 font-size: 0.83rem;
                 font-weight: 600;
                 cursor: pointer;
@@ -1383,11 +1290,11 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                gap: 5px;
+                gap: 6px;
                 white-space: nowrap;
                 text-align: center;
                 user-select: none;
-                min-height: 38px;
+                min-height: 40px;
                 box-sizing: border-box;
             }}
             .fs-btn {{
@@ -1421,16 +1328,88 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 color: white;
             }}
             .rec-btn-stop:hover {{ background: #059669; }}
+
+            /* Whiteboard Panel Styling */
+            #whiteboard-panel {{
+                background: #020617;
+                border-bottom: 2px solid #334155;
+                display: none;
+                flex-direction: column;
+                width: 100%;
+                z-index: 15;
+            }}
+            .wb-toolbar {{
+                background: #0f172a;
+                padding: 8px 10px;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                flex-wrap: wrap;
+                border-bottom: 1px solid #1e293b;
+            }}
+            .wb-group {{
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+            }}
+            .wb-color-btn {{
+                width: 24px;
+                height: 24px;
+                border-radius: 50%;
+                border: 2px solid #64748b;
+                cursor: pointer;
+                padding: 0;
+                outline: none;
+            }}
+            .wb-color-btn.active {{
+                border-color: #38bdf8;
+                box-shadow: 0 0 0 2px #0284c7;
+                transform: scale(1.15);
+            }}
+            .wb-tool-btn {{
+                background: #1e293b;
+                color: #e2e8f0;
+                border: 1px solid #334155;
+                padding: 6px 10px;
+                border-radius: 6px;
+                font-size: 0.78rem;
+                font-weight: 600;
+                cursor: pointer;
+            }}
+            .wb-tool-btn.active {{
+                background: #0284c7;
+                color: white;
+                border-color: #38bdf8;
+            }}
+            .wb-canvas-container {{
+                width: 100%;
+                height: 380px;
+                position: relative;
+                background: #020617;
+                overflow: hidden;
+                touch-action: none;
+            }}
+            #teaching-canvas {{
+                width: 100%;
+                height: 100%;
+                display: block;
+                touch-action: none;
+                cursor: crosshair;
+            }}
+
+            /* Jitsi Video Container */
             #jitsi-container {{
                 flex: 1;
                 width: 100%;
-                height: 560px;
+                min-height: 520px;
+                height: 540px;
                 background: #111827;
                 transition: height 0.3s ease;
             }}
             @media (max-width: 768px) {{
                 #jitsi-container {{
-                    height: 520px !important;
+                    min-height: 480px;
+                    height: 500px;
                 }}
             }}
             #jitsi-container iframe {{
@@ -1441,20 +1420,38 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
         </style>
     </head>
     <body>
-        <div id="classroom-wrapper">
+        <div id="classroom-master-wrapper">
+            <button id="floating-fs-btn" onclick="toggleFullScreen()">❌ Exit Full Screen (Chhota Karein)</button>
             {topbar_html}
+            {whiteboard_html}
             <div id="jitsi-container"></div>
         </div>
 
         <script>
             let api = null;
-            let isExpandedMode = false;
+            let isFullscreenMode = false;
+
+            // Canvas & Whiteboard state
+            let canvas = null;
+            let ctx = null;
+            let isDrawing = false;
+            let currentPenColor = '#ffffff';
+            let currentLineWidth = 6;
+            let isEraser = false;
+            let loadedBookImage = null;
+
+            // MediaRecorder state
+            let mediaRecorder = null;
+            let recordedChunks = [];
+            let recTimerInterval = null;
+            let recSeconds = 0;
+            let animFrameId = null;
 
             function isMobileDevice() {{
                 return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || (window.innerWidth <= 768);
             }}
 
-            function showClassroomNotice(msg, isWarning = true) {{
+            function showClassroomNotice(msg, isWarning = false) {{
                 const banner = document.getElementById('classroom-notice-toast');
                 if (banner) {{
                     banner.innerText = msg;
@@ -1462,17 +1459,96 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                     banner.style.background = isWarning ? '#b45309' : '#059669';
                     setTimeout(() => {{
                         banner.style.display = 'none';
-                    }}, 9000);
+                    }}, 8000);
                 }} else {{
                     alert(msg);
                 }}
             }}
 
+            // Fullscreen Toggle with Prominent Floating Exit Button
+            function toggleFullScreen() {{
+                const master = document.getElementById('classroom-master-wrapper');
+                const floatBtn = document.getElementById('floating-fs-btn');
+                const topFsBtn = document.getElementById('fs-toggle-btn');
+                const jitsiCont = document.getElementById('jitsi-container');
+
+                isFullscreenMode = !isFullscreenMode;
+
+                if (isFullscreenMode) {{
+                    try {{
+                        if (master.requestFullscreen) {{
+                            master.requestFullscreen().catch(() => {{}});
+                        }} else if (master.webkitRequestFullscreen) {{
+                            master.webkitRequestFullscreen();
+                        }}
+                    }} catch (e) {{
+                        console.log("Native FS error:", e);
+                    }}
+
+                    master.classList.add('is-fullscreen');
+                    if (floatBtn) {{
+                        floatBtn.style.display = 'inline-flex';
+                        floatBtn.innerHTML = '❌ Exit Full Screen (Chhota Karein)';
+                    }}
+                    if (topFsBtn) {{
+                        topFsBtn.innerHTML = '❌ Exit Full Screen';
+                    }}
+                    if (window.frameElement) {{
+                        window.frameElement.style.height = "100vh";
+                        window.frameElement.style.maxHeight = "100vh";
+                        try {{
+                            window.frameElement.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+                        }} catch (err) {{}}
+                    }}
+                    if (jitsiCont) {{
+                        jitsiCont.style.height = "calc(100vh - 120px)";
+                    }}
+                }} else {{
+                    try {{
+                        if (document.fullscreenElement || document.webkitFullscreenElement) {{
+                            if (document.exitFullscreen) {{
+                                document.exitFullscreen().catch(() => {{}});
+                            }} else if (document.webkitExitFullscreen) {{
+                                document.webkitExitFullscreen();
+                            }}
+                        }}
+                    }} catch (e) {{
+                        console.log("Exit FS error:", e);
+                    }}
+
+                    master.classList.remove('is-fullscreen');
+                    if (floatBtn) {{
+                        floatBtn.style.display = 'none';
+                    }}
+                    if (topFsBtn) {{
+                        topFsBtn.innerHTML = '⛶ Full Screen';
+                    }}
+                    if (window.frameElement) {{
+                        window.frameElement.style.height = "{component_height}px";
+                    }}
+                    if (jitsiCont) {{
+                        jitsiCont.style.height = "520px";
+                    }}
+                }}
+            }}
+
+            document.addEventListener('fullscreenchange', () => {{
+                if (!document.fullscreenElement && !document.webkitFullscreenElement && isFullscreenMode) {{
+                    toggleFullScreen();
+                }}
+            }});
+            document.addEventListener('webkitfullscreenchange', () => {{
+                if (!document.webkitFullscreenElement && isFullscreenMode) {{
+                    toggleFullScreen();
+                }}
+            }});
+
+            // Camera Flip
             function switchCamera() {{
                 if (api) {{
                     try {{
                         api.executeCommand('toggleCamera');
-                        showClassroomNotice("📷 Switched Camera (Front ⇄ Back) to show Book / Qaida to students!", false);
+                        showClassroomNotice("📷 Switched Camera (Front ⇄ Back) to show Book / Notes to students!", false);
                     }} catch (e) {{
                         console.error("Camera switch error:", e);
                         try {{ api.executeCommand('toggleVideo'); }} catch(err) {{}}
@@ -1481,103 +1557,373 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 }}
             }}
 
+            // Whiteboard & Canvas Implementation
+            function initCanvas() {{
+                canvas = document.getElementById('teaching-canvas');
+                if (!canvas) return;
+                ctx = canvas.getContext('2d');
+                if (canvas.width !== 1280) canvas.width = 1280;
+                if (canvas.height !== 720) canvas.height = 720;
+                
+                redrawCanvas();
+
+                // Mouse events
+                canvas.onmousedown = (e) => startDrawing(e);
+                canvas.onmousemove = (e) => drawMove(e);
+                canvas.onmouseup = () => stopDrawing();
+                canvas.onmouseleave = () => stopDrawing();
+
+                // Touch events (Mobile finger drawing)
+                canvas.addEventListener('touchstart', (e) => {{
+                    e.preventDefault();
+                    startDrawing(getTouchPos(e));
+                }}, {{ passive: false }});
+
+                canvas.addEventListener('touchmove', (e) => {{
+                    e.preventDefault();
+                    drawMove(getTouchPos(e));
+                }}, {{ passive: false }});
+
+                canvas.addEventListener('touchend', (e) => {{
+                    e.preventDefault();
+                    stopDrawing();
+                }}, {{ passive: false }});
+            }}
+
+            function getCanvasPos(evt) {{
+                const rect = canvas.getBoundingClientRect();
+                const scaleX = canvas.width / rect.width;
+                const scaleY = canvas.height / rect.height;
+                return {{
+                    x: (evt.clientX - rect.left) * scaleX,
+                    y: (evt.clientY - rect.top) * scaleY
+                }};
+            }}
+
+            function getTouchPos(touchEvent) {{
+                if (touchEvent.touches && touchEvent.touches.length > 0) {{
+                    return touchEvent.touches[0];
+                }}
+                return touchEvent;
+            }}
+
+            function startDrawing(e) {{
+                isDrawing = true;
+                const pos = getCanvasPos(e);
+                ctx.beginPath();
+                ctx.moveTo(pos.x, pos.y);
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.strokeStyle = isEraser ? '#020617' : currentPenColor;
+                ctx.lineWidth = isEraser ? (currentLineWidth * 3) : currentLineWidth;
+            }}
+
+            function drawMove(e) {{
+                if (!isDrawing) return;
+                const pos = getCanvasPos(e);
+                ctx.lineTo(pos.x, pos.y);
+                ctx.stroke();
+            }}
+
+            function stopDrawing() {{
+                if (isDrawing) {{
+                    ctx.closePath();
+                    isDrawing = false;
+                }}
+            }}
+
+            function setPenColor(color, btn) {{
+                isEraser = false;
+                currentPenColor = color;
+                document.querySelectorAll('.wb-color-btn').forEach(b => b.classList.remove('active'));
+                if (btn) btn.classList.add('active');
+                const eraserBtn = document.getElementById('eraser-btn');
+                if (eraserBtn) eraserBtn.classList.remove('active');
+            }}
+
+            function setLineWidth(width, btn) {{
+                currentLineWidth = width;
+                document.querySelectorAll('.wb-group .wb-tool-btn').forEach(b => {{
+                    if (b.innerText === 'Thin' || b.innerText === 'Med' || b.innerText === 'Thick') {{
+                        b.classList.remove('active');
+                    }}
+                }});
+                if (btn) btn.classList.add('active');
+            }}
+
+            function toggleEraser() {{
+                isEraser = !isEraser;
+                const eraserBtn = document.getElementById('eraser-btn');
+                if (eraserBtn) {{
+                    if (isEraser) {{
+                        eraserBtn.classList.add('active');
+                        document.querySelectorAll('.wb-color-btn').forEach(b => b.classList.remove('active'));
+                    }} else {{
+                        eraserBtn.classList.remove('active');
+                        setPenColor(currentPenColor, null);
+                    }}
+                }}
+            }}
+
+            function redrawCanvas() {{
+                if (!ctx) return;
+                if (loadedBookImage) {{
+                    ctx.fillStyle = '#020617';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    const scale = Math.min(canvas.width / loadedBookImage.width, canvas.height / loadedBookImage.height);
+                    const nw = loadedBookImage.width * scale;
+                    const nh = loadedBookImage.height * scale;
+                    const nx = (canvas.width - nw) / 2;
+                    const ny = (canvas.height - nh) / 2;
+                    ctx.drawImage(loadedBookImage, nx, ny, nw, nh);
+                }} else {{
+                    ctx.fillStyle = '#020617';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.fillStyle = '#1e293b';
+                    ctx.fillRect(0, 0, canvas.width, 42);
+                    ctx.fillStyle = '#38bdf8';
+                    ctx.font = 'bold 20px sans-serif';
+                    ctx.fillText("✨ Interactive Teaching Whiteboard & Book Presenter (Draw & Highlight)", 24, 28);
+                }}
+            }}
+
+            function clearCanvasDrawing() {{
+                loadedBookImage = null;
+                redrawCanvas();
+                showClassroomNotice("Whiteboard cleared.", false);
+            }}
+
+            function triggerBookImagePicker() {{
+                const input = document.getElementById('board-image-loader');
+                if (input) input.click();
+            }}
+
+            function loadBookImageToCanvas(event) {{
+                const file = event.target.files && event.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = function(e) {{
+                    const img = new Image();
+                    img.onload = function() {{
+                        loadedBookImage = img;
+                        const panel = document.getElementById('whiteboard-panel');
+                        if (panel && panel.style.display === 'none') {{
+                            panel.style.display = 'flex';
+                        }}
+                        initCanvas();
+                        redrawCanvas();
+                        showClassroomNotice("📖 Book page loaded! You can now draw, explain, and highlight on top.", false);
+                    }};
+                    img.src = e.target.result;
+                }};
+                reader.readAsDataURL(file);
+            }}
+
+            function toggleWhiteboard() {{
+                const panel = document.getElementById('whiteboard-panel');
+                if (!panel) return;
+                const isOpen = panel.style.display !== 'none';
+                if (isOpen) {{
+                    panel.style.display = 'none';
+                }} else {{
+                    panel.style.display = 'flex';
+                    initCanvas();
+                }}
+            }}
+
+            // Share Screen / Book Page (ZERO external redirects)
             function handleScreenShare() {{
-                if (!isMobileDevice()) {{
+                if (isMobileDevice() || !navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {{
+                    showClassroomNotice("📱 Opening Book Page / Notes Presenter! Pick your book page to display & draw.", false);
+                    const panel = document.getElementById('whiteboard-panel');
+                    if (panel && panel.style.display === 'none') {{
+                        panel.style.display = 'flex';
+                        initCanvas();
+                    }}
+                    triggerBookImagePicker();
+                }} else {{
                     if (api) {{
                         try {{
                             api.executeCommand('toggleShareScreen');
+                            showClassroomNotice("Desktop Screen Share toggled.", false);
                         }} catch (e) {{
                             showClassroomNotice("Screen share error: " + e.message, true);
                         }}
                     }}
-                }} else {{
-                    const roomUrl = "https://{domain_clean}/{room_name}#config.startWithVideoMuted=true&config.prejoinPageEnabled=false";
-                    const deepLink = "intent://{domain_clean}/{room_name}#Intent;scheme=org.jitsi.meet;package=org.jitsi.meet;end";
-                    
-                    showClassroomNotice("📱 Launching Native Mobile Screen Share! (Broadcast your phone screen with PDFs/Qaida to students)", false);
-                    setTimeout(() => {{
-                        const opened = window.open(roomUrl, '_blank');
-                        if (!opened) {{
-                            window.location.href = deepLink;
-                        }}
-                    }}, 400);
                 }}
             }}
 
-            function toggleWhiteboard() {{
-                if (api) {{
-                    try {{
-                        api.executeCommand('toggleWhiteboard');
-                        showClassroomNotice("✏️ Interactive Whiteboard opened! Draw lessons and write Arabic/Urdu notes for students.", false);
-                    }} catch (e) {{
-                        console.error("Whiteboard error:", e);
-                        showClassroomNotice("Could not toggle Whiteboard: " + e.message, true);
+            // Real Video + Audio Recording (MediaRecorder)
+            function ensureActiveCanvasStream() {{
+                if (!canvas) initCanvas();
+                function renderHeartbeat() {{
+                    if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
+                    if (ctx) {{
+                        ctx.save();
+                        ctx.fillStyle = '#ef4444';
+                        ctx.beginPath();
+                        ctx.arc(canvas.width - 30, 30, 8, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.restore();
                     }}
+                    animFrameId = requestAnimationFrame(renderHeartbeat);
                 }}
-            }}
+                renderHeartbeat();
 
-            function toggleFullScreen() {{
-                const wrapper = document.getElementById('classroom-wrapper');
-                const container = document.getElementById('jitsi-container');
-                const fsBtn = document.getElementById('fs-toggle-btn');
-                const isMobile = window.innerWidth <= 768;
-
-                // 1. Attempt standard browser/WebView fullscreen
                 try {{
-                    if (!document.fullscreenElement && !document.webkitFullscreenElement) {{
-                        if (container.requestFullscreen) {{
-                            container.requestFullscreen().catch(err => {{
-                                console.log("container.requestFullscreen non-fatal:", err);
-                            }});
-                        }} else if (container.webkitRequestFullscreen) {{
-                            container.webkitRequestFullscreen();
-                        }} else if (wrapper.requestFullscreen) {{
-                            wrapper.requestFullscreen().catch(err => {{}});
-                        }} else if (wrapper.webkitRequestFullscreen) {{
-                            wrapper.webkitRequestFullscreen();
-                        }}
-                    }} else {{
-                        if (document.exitFullscreen) {{
-                            document.exitFullscreen().catch(() => {{}});
-                        }} else if (document.webkitExitFullscreen) {{
-                            document.webkitExitFullscreen();
-                        }}
-                    }}
+                    return canvas.captureStream ? canvas.captureStream(30) : null;
                 }} catch (e) {{
-                    console.log("Native fullscreen exception:", e);
-                }}
-
-                // 2. Simultaneously toggle expanded mobile full-height mode
-                isExpandedMode = !isExpandedMode;
-                if (isExpandedMode) {{
-                    container.style.height = "92vh";
-                    if (wrapper) {{
-                        wrapper.style.height = "100vh";
-                    }}
-                    if (window.frameElement) {{
-                        window.frameElement.style.height = "94vh";
-                        window.frameElement.style.maxHeight = "100vh";
-                        try {{
-                            window.frameElement.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-                        }} catch (err) {{}}
-                    }}
-                    if (fsBtn) fsBtn.innerHTML = "🗗 Exit Full Screen";
-                    try {{
-                        container.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-                    }} catch (err) {{}}
-                }} else {{
-                    container.style.height = isMobile ? "520px" : "560px";
-                    if (wrapper) {{
-                        wrapper.style.height = "100%";
-                    }}
-                    if (window.frameElement) {{
-                        window.frameElement.style.height = "{component_height}px";
-                    }}
-                    if (fsBtn) fsBtn.innerHTML = "⛶ Full Screen";
+                    console.warn("captureStream error:", e);
+                    return null;
                 }}
             }}
 
-            {recorder_script}
+            async function toggleRecording() {{
+                const btn = document.getElementById('rec-toggle-btn');
+                const statusBar = document.getElementById('rec-status-bar');
+                const timerElem = document.getElementById('rec-timer');
+
+                if (mediaRecorder && mediaRecorder.state === 'recording') {{
+                    mediaRecorder.stop();
+                    if (recTimerInterval) clearInterval(recTimerInterval);
+                    if (animFrameId) cancelAnimationFrame(animFrameId);
+                    btn.innerHTML = "⏺️ Record Class (Video + Voice)";
+                    btn.className = "topbar-btn rec-btn topbar-full-width";
+                    if (statusBar) statusBar.style.display = "none";
+                    showClassroomNotice("Saving Video + Voice class recording...", false);
+                    return;
+                }}
+
+                try {{
+                    let videoTrack = null;
+                    let audioTrack = null;
+                    let screenStream = null;
+
+                    // 1. Try getDisplayMedia on Desktop if available
+                    if (!isMobileDevice() && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {{
+                        try {{
+                            screenStream = await navigator.mediaDevices.getDisplayMedia({{
+                                video: {{ frameRate: {{ ideal: 30 }} }},
+                                audio: true
+                            }});
+                            if (screenStream && screenStream.getVideoTracks().length > 0) {{
+                                videoTrack = screenStream.getVideoTracks()[0];
+                            }}
+                        }} catch (err) {{
+                            console.log("Desktop display capture skipped, using canvas:", err);
+                        }}
+                    }}
+
+                    // 2. If no desktop videoTrack, capture directly from teaching canvas
+                    if (!videoTrack) {{
+                        const panel = document.getElementById('whiteboard-panel');
+                        if (panel && panel.style.display === 'none') {{
+                            panel.style.display = 'flex';
+                        }}
+                        initCanvas();
+                        const canvasStream = ensureActiveCanvasStream();
+                        if (canvasStream && canvasStream.getVideoTracks().length > 0) {{
+                            videoTrack = canvasStream.getVideoTracks()[0];
+                        }}
+                    }}
+
+                    // 3. Capture Teacher microphone audio track
+                    let micStream = null;
+                    try {{
+                        micStream = await navigator.mediaDevices.getUserMedia({{
+                            audio: {{
+                                echoCancellation: true,
+                                noiseSuppression: true,
+                                autoGainControl: true
+                            }}
+                        }});
+                        if (micStream && micStream.getAudioTracks().length > 0) {{
+                            audioTrack = micStream.getAudioTracks()[0];
+                        }}
+                    }} catch (audioErr) {{
+                        console.warn("Microphone access warning:", audioErr);
+                    }}
+
+                    const tracks = [];
+                    if (videoTrack) tracks.push(videoTrack);
+                    if (audioTrack) tracks.push(audioTrack);
+                    if (screenStream && screenStream.getAudioTracks().length > 0) {{
+                        tracks.push(screenStream.getAudioTracks()[0]);
+                    }}
+
+                    if (tracks.length === 0) {{
+                        alert("Could not access microphone or video canvas to record.");
+                        return;
+                    }}
+
+                    const combinedStream = new MediaStream(tracks);
+
+                    let mimeType = 'video/webm;codecs=vp8,opus';
+                    if (!MediaRecorder.isTypeSupported(mimeType)) {{
+                        if (MediaRecorder.isTypeSupported('video/webm')) {{
+                            mimeType = 'video/webm';
+                        }} else if (MediaRecorder.isTypeSupported('video/mp4')) {{
+                            mimeType = 'video/mp4';
+                        }} else {{
+                            mimeType = '';
+                        }}
+                    }}
+
+                    recordedChunks = [];
+                    const options = mimeType ? {{ mimeType }} : {{}};
+                    mediaRecorder = new MediaRecorder(combinedStream, options);
+
+                    mediaRecorder.ondataavailable = function(e) {{
+                        if (e.data && e.data.size > 0) {{
+                            recordedChunks.push(e.data);
+                        }}
+                    }};
+
+                    mediaRecorder.onstop = function() {{
+                        combinedStream.getTracks().forEach(t => t.stop());
+                        if (screenStream) screenStream.getTracks().forEach(t => t.stop());
+                        if (micStream) micStream.getTracks().forEach(t => t.stop());
+
+                        const blob = new Blob(recordedChunks, {{ type: mimeType || 'video/webm' }});
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.style.display = 'none';
+                        a.href = url;
+                        const now = new Date();
+                        const dateStr = now.toISOString().slice(0,10) + "_" + now.getHours() + "-" + now.getMinutes();
+                        a.download = `Live_Class_Recording_${{dateStr}}.webm`;
+                        document.body.appendChild(a);
+                        a.click();
+                        setTimeout(() => {{
+                            document.body.removeChild(a);
+                            window.URL.revokeObjectURL(url);
+                        }}, 100);
+
+                        showClassroomNotice("✅ Class Recording saved! Check your Downloads folder.", false);
+                    }};
+
+                    mediaRecorder.start(1000);
+
+                    btn.innerHTML = "⏹️ Stop Recording (Save Video + Voice)";
+                    btn.className = "topbar-btn rec-btn-stop topbar-full-width";
+                    if (statusBar) statusBar.style.display = "flex";
+
+                    recSeconds = 0;
+                    if (timerElem) timerElem.innerText = "00:00:00";
+                    recTimerInterval = setInterval(() => {{
+                        recSeconds++;
+                        const hrs = String(Math.floor(recSeconds / 3600)).padStart(2, '0');
+                        const mins = String(Math.floor((recSeconds % 3600) / 60)).padStart(2, '0');
+                        const secs = String(recSeconds % 60).padStart(2, '0');
+                        if (timerElem) timerElem.innerText = `${{hrs}}:${{mins}}:${{secs}}`;
+                    }}, 1000);
+
+                    showClassroomNotice("⏺️ Recording Video + Audio Active!", false);
+                }} catch (err) {{
+                    console.error("Recording start error:", err);
+                    alert("Could not start recording: " + err.message);
+                }}
+            }}
 
             window.onload = function() {{
                 try {{
@@ -1608,7 +1954,6 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                     }};
                     api = new JitsiMeetExternalAPI(domain, options);
                     
-                    // Ensure iframe permissions are set
                     setTimeout(() => {{
                         const iframe = document.querySelector('#jitsi-container iframe');
                         if (iframe) {{
