@@ -642,43 +642,25 @@ def init_database():
         VALUES ('admin', ?, ?, 'admin', 'Super Admin', 1, ?)
         """, (admin_pwd, admin_hash, now_str))
 
-    # (b) & (c) ONLY seed default teachers & students ONCE.
-    #     After that, any accounts deleted by Teacher/Admin must stay deleted.
-    #     We track this via app_meta key 'initial_seed_done'.
-    c.execute("SELECT value FROM app_meta WHERE key = 'initial_seed_done'")
-    seed_done = c.fetchone()
+    # (b) One-time purge of all old demo/default accounts.
+    #     Only the Super Admin (admin) can create real Teacher & Student accounts going forward.
+    #     Demo accounts (teacher, teacher1, teacher2, student1..student10) must not appear.
+    c.execute("SELECT value FROM app_meta WHERE key = 'demo_accounts_purged_v1'")
+    purge_done = c.fetchone()
 
-    if not seed_done:
-        # Pre-seed Default Teacher Accounts
-        t1_hash = hash_password("teacher123")
-        t2_hash = hash_password("teacher456")
-
-        c.execute("""
-        INSERT OR IGNORE INTO users (username, password, password_hash, role, full_name, is_active, created_at)
-        VALUES ('teacher', 'teacher123', ?, 'teacher', 'Lead Teacher', 1, ?)
-        """, (t1_hash, now_str))
-
-        c.execute("""
-        INSERT OR IGNORE INTO users (username, password, password_hash, role, full_name, is_active, created_at)
-        VALUES ('teacher1', 'teacher123', ?, 'teacher', 'Teacher 1', 1, ?)
-        """, (t1_hash, now_str))
-
-        c.execute("""
-        INSERT OR IGNORE INTO users (username, password, password_hash, role, full_name, is_active, created_at)
-        VALUES ('teacher2', 'teacher456', ?, 'teacher', 'Teacher 2', 1, ?)
-        """, (t2_hash, now_str))
-
-        # Pre-seed 10 Default Student Accounts
-        st_pwd_hash = hash_password("pass123")
-        for i in range(1, 11):
-            u_name = f"student{i}"
-            c.execute("""
-            INSERT OR IGNORE INTO users (username, password, password_hash, role, full_name, is_active, created_at)
-            VALUES (?, 'pass123', ?, 'student', ?, 1, ?)
-            """, (u_name, st_pwd_hash, f"Student {i}", now_str))
-
-        # Mark initial seed as done — will never re-seed on future reruns
-        c.execute("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('initial_seed_done', '1')")
+    if not purge_done:
+        demo_usernames = (
+            'teacher', 'teacher1', 'teacher2',
+            'student1', 'student2', 'student3', 'student4', 'student5',
+            'student6', 'student7', 'student8', 'student9', 'student10'
+        )
+        placeholders = ','.join('?' * len(demo_usernames))
+        # Delete their fees first (no orphan records)
+        c.execute(f"DELETE FROM fees WHERE student_username IN ({placeholders})", demo_usernames)
+        # Delete the demo user accounts
+        c.execute(f"DELETE FROM users WHERE username IN ({placeholders})", demo_usernames)
+        # Mark purge as done — never runs again
+        c.execute("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('demo_accounts_purged_v1', '1')")
 
     # Seed initial announcement if empty
     c.execute("SELECT COUNT(*) as cnt FROM announcements")
@@ -1420,21 +1402,12 @@ def render_login_screen():
         """, unsafe_allow_html=True)
 
         with st.form("login_form", clear_on_submit=False):
-            u_input = st.text_input("Username", placeholder="e.g. teacher1 or student1").strip().lower()
+            u_input = st.text_input("Username", placeholder="Enter your username").strip().lower()
             p_input = st.text_input("Password", type="password", placeholder="Enter your password")
             submit = st.form_submit_button("Sign In to Portal", use_container_width=True, type="primary")
 
             if submit:
                 handle_login(u_input, p_input)
-
-        with st.expander("🔑 Default Demo Accounts (Click to view)"):
-            st.markdown("""
-            - **Teacher Accounts:**
-              - `teacher1` | Password: `teacher123` (Teacher 1)
-              - `teacher2` | Password: `teacher456` (Teacher 2)
-              - `teacher` | Password: `teacher123` (Lead Teacher)
-            - **Student Accounts:** Usernames: `student1` to `student10` | Password: `pass123`
-            """)
 
 
 # ==========================================
