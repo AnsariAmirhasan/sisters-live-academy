@@ -819,26 +819,27 @@ st.markdown("""
     }
 
     /* --------------------------------------------------------
-       1. COMPLETE STREAMLIT CHROME, FOOTER & ANCHOR HIDING
+       1. MOBILE-COMPATIBLE STREAMLIT HEADER & EXPAND BUTTON
        -------------------------------------------------------- */
     header[data-testid="stHeader"] {
+        background: transparent !important;
+    }
+    [data-testid="stToolbar"], [data-testid="stDecoration"], #MainMenu, .stAppDeployButton, footer, div[data-testid="stStatusWidget"] {
         display: none !important;
-        height: 0px !important;
         visibility: hidden !important;
     }
-    #MainMenu {
-        visibility: hidden !important;
-        display: none !important;
+    [data-testid="stExpandSidebarButton"], [data-testid="collapsedControl"] {
+        display: flex !important;
+        visibility: visible !important;
+        z-index: 999999 !important;
+        background-color: #6366f1 !important;
+        color: white !important;
+        border-radius: 8px !important;
+        margin: 6px !important;
     }
-    footer {
-        visibility: hidden !important;
-        display: none !important;
-    }
-    div[data-testid="stDecoration"] {
-        display: none !important;
-    }
-    div[data-testid="stStatusWidget"] {
-        display: none !important;
+    [data-testid="stExpandSidebarButton"] svg, [data-testid="collapsedControl"] svg {
+        color: white !important;
+        fill: white !important;
     }
 
     /* Hide heading anchor link icons (🔗) */
@@ -851,9 +852,33 @@ st.markdown("""
 
     /* Full-width native app container */
     div.block-container {
-        padding-top: 1.2rem !important;
+        padding-top: 1.5rem !important;
         padding-bottom: 2.5rem !important;
         max-width: 96% !important;
+    }
+
+    /* Mobile Responsive Optimizations */
+    @media (max-width: 768px) {
+        div.block-container {
+            padding-top: 0.9rem !important;
+            padding-bottom: 2.5rem !important;
+            padding-left: 0.5rem !important;
+            padding-right: 0.5rem !important;
+            max-width: 100% !important;
+        }
+        div[data-testid="stButton"] > button,
+        div[data-testid="stFormSubmitButton"] > button,
+        div[data-testid="stLinkButton"] > a,
+        div[data-testid="stPopover"] > button {
+            width: 100% !important;
+            min-height: 44px !important;
+            font-size: 14px !important;
+            font-weight: 700 !important;
+        }
+        iframe[data-testid="stCustomComponentV1"] {
+            width: 100% !important;
+            border: none !important;
+        }
     }
 
     /* --------------------------------------------------------
@@ -1083,13 +1108,12 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
 
     if is_teacher:
         tb_buttons = json.dumps([
-            'microphone', 'camera', 'desktop', 'chat', 'raisehand',
-            'videoquality', 'tileview', 'mute-everyone', 'security', 'whiteboard', 'hangup'
+            'microphone', 'camera', 'desktop', 'whiteboard', 'chat', 'raisehand', 'tileview', 'fullscreen', 'hangup'
         ])
         student_restrictions_js = ""
     else:
         # Strict student security: No hangup button (prevents 'End meeting for all' popup),
-        # no security/mute-everyone/livestreaming
+        # no security/mute-everyone/livestreaming/desktop
         tb_buttons = json.dumps([
             'microphone', 'camera', 'chat', 'raisehand', 'tileview', 'fullscreen'
         ])
@@ -1101,24 +1125,37 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                                 disablePrivateChat: false
                             }"""
 
-
-    topbar_right = """
-        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-            <span id="rec-dot" style="width:10px; height:10px; border-radius:50%; background:#64748b; display:inline-block;"></span>
-            <span id="rec-timer" style="font-family:monospace; color:#38bdf8; font-weight:bold; font-size:0.95rem;">00:00:00</span>
-            <button id="start-rec-btn" onclick="startRecording()" style="background:#ef4444; color:white; border:none; padding:6px 14px; border-radius:6px; font-size:0.85rem; font-weight:600; cursor:pointer;">⏺️ Record Screen & Voice</button>
-            <button id="stop-rec-btn" onclick="stopRecording()" style="display:none; background:#10b981; color:white; border:none; padding:6px 14px; border-radius:6px; font-size:0.85rem; font-weight:600; cursor:pointer;">💾 Stop & Save File</button>
-            <span id="rec-saved-banner" style="display:none; background:#059669; color:white; padding:4px 10px; border-radius:6px; font-size:0.8rem; font-weight:600;">✅ Recording Saved! Drop below to publish.</span>
+    if is_teacher:
+        topbar_html = """
+        <div class="classroom-topbar">
+            <button id="fs-toggle-btn" class="topbar-btn fs-btn" onclick="toggleFullScreen()">⛶ Full Screen</button>
+            <button id="whiteboard-btn" class="topbar-btn wb-btn" onclick="toggleWhiteboard()">✏️ Whiteboard</button>
+            <button id="cam-toggle-btn" class="topbar-btn cam-btn" onclick="switchCamera()">📷 Book / Back Cam</button>
+            <button id="share-screen-btn" class="topbar-btn share-btn" onclick="handleScreenShare()">📱 Screen Share</button>
+            <button id="rec-toggle-btn" class="topbar-btn rec-btn topbar-full-width" onclick="toggleRecording()">⏺️ Record Class</button>
         </div>
-    """ if is_teacher else """
-        <span style="color:#94a3b8; font-size:0.85rem; font-weight:500;">🎥 Live Audio/Video Stream Active</span>
-    """
+        <div id="classroom-notice-toast" style="display:none; padding:8px 12px; margin:4px 8px; border-radius:6px; font-size:0.83rem; color:white; font-weight:600; text-align:center;"></div>
+        <div id="rec-status-bar" style="display:none; padding:6px 10px; background:#0f172a; border-bottom:1px solid #334155; justify-content:center; align-items:center; gap:8px;">
+            <span style="width:10px; height:10px; border-radius:50%; background:#ef4444; display:inline-block;"></span>
+            <span id="rec-timer" style="font-family:monospace; color:#38bdf8; font-weight:bold; font-size:0.92rem;">00:00:00</span>
+            <span style="color:#94a3b8; font-size:0.8rem; font-weight:500;">Recording Active (Click 'Stop' to save)</span>
+        </div>
+        """
+    else:
+        topbar_html = """
+        <div class="classroom-topbar" style="display:flex; justify-content:space-between; align-items:center;">
+            <button id="fs-toggle-btn" class="topbar-btn fs-btn" onclick="toggleFullScreen()">⛶ Full Screen</button>
+            <span style="color:#94a3b8; font-size:0.85rem; font-weight:500;">🎥 Live Audio/Video Stream Active</span>
+        </div>
+        <div id="classroom-notice-toast" style="display:none; padding:8px 12px; margin:4px 8px; border-radius:6px; font-size:0.83rem; color:white; font-weight:600; text-align:center;"></div>
+        """
 
     recorder_script = f"""
-        let mediaRecorder;
+        let mediaRecorder = null;
         let recordedChunks = [];
-        let timerInterval;
+        let timerInterval = null;
         let recSeconds = 0;
+        let isRecording = false;
 
         function formatTimer(s) {{
             const h = String(Math.floor(s / 3600)).padStart(2, '0');
@@ -1127,82 +1164,163 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             return `${{h}}:${{m}}:${{sc}}`;
         }}
 
-        async function startRecording() {{
-            try {{
-                const stream = await navigator.mediaDevices.getDisplayMedia({{
-                    video: {{ cursor: "always" }},
-                    audio: true
-                }});
+        async function toggleRecording() {{
+            if (!isRecording) {{
+                let stream = null;
+                let isAudioOnly = false;
 
-                recordedChunks = [];
-                mediaRecorder = new MediaRecorder(stream, {{ mimeType: 'video/webm' }});
-
-                mediaRecorder.ondataavailable = (e) => {{
-                    if (e.data.size > 0) recordedChunks.push(e.data);
-                }};
-
-                mediaRecorder.onstop = () => {{
-                    clearInterval(timerInterval);
-                    document.getElementById('rec-timer').innerText = "00:00:00";
-                    document.getElementById('rec-dot').style.background = "#64748b";
-                    document.getElementById('rec-dot').style.boxShadow = "none";
-                    document.getElementById('start-rec-btn').style.display = "inline-block";
-                    document.getElementById('stop-rec-btn').style.display = "none";
-
-                    const blob = new Blob(recordedChunks, {{ type: 'video/webm' }});
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.style.display = 'none';
-                    a.href = url;
-                    const d = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-                    a.download = `Sisters_Academy_Class_${{d}}.webm`;
-                    document.body.appendChild(a);
-                    a.click();
-                    setTimeout(() => {{
-                        document.body.removeChild(a);
-                        window.URL.revokeObjectURL(url);
-                    }}, 100);
-
-                    const banner = document.getElementById('rec-saved-banner');
-                    if (banner) banner.style.display = 'inline-block';
+                // 1. Desktop: Try screen capture if getDisplayMedia is supported
+                if (!isMobileDevice() && navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function') {{
                     try {{
-                        window.open("{DEFAULT_DRIVE_FOLDER_URL}", "_blank");
-                    }} catch(e) {{}}
-                }};
+                        stream = await navigator.mediaDevices.getDisplayMedia({{
+                            video: {{ cursor: "always" }},
+                            audio: true
+                        }});
+                    }} catch (dispErr) {{
+                        console.warn("getDisplayMedia cancelled or unavailable:", dispErr);
+                        if (dispErr.name === 'NotAllowedError') {{
+                            showClassroomNotice("Screen recording was cancelled.", true);
+                            return;
+                        }}
+                    }}
+                }}
 
-                stream.getVideoTracks()[0].onended = () => {{
-                    if (mediaRecorder.state !== 'inactive') mediaRecorder.stop();
-                }};
+                // 2. Mobile Phone or Desktop fallback: Use getUserMedia (Audio + Camera / Voice)
+                if (!stream) {{
+                    try {{
+                        if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') {{
+                            try {{
+                                stream = await navigator.mediaDevices.getUserMedia({{
+                                    audio: {{ echoCancellation: true, noiseSuppression: true }},
+                                    video: {{ facingMode: {{ ideal: "environment" }} }}
+                                }});
+                            }} catch (vidErr) {{
+                                stream = await navigator.mediaDevices.getUserMedia({{
+                                    audio: {{ echoCancellation: true, noiseSuppression: true }}
+                                }});
+                                isAudioOnly = true;
+                            }}
+                        }}
+                    }} catch (mediaErr) {{
+                        console.error("getUserMedia error:", mediaErr);
+                        showClassroomNotice("Microphone permission required for class recording: " + mediaErr.message, true);
+                        return;
+                    }}
+                }}
 
-                mediaRecorder.start(1000);
-                document.getElementById('start-rec-btn').style.display = "none";
-                document.getElementById('stop-rec-btn').style.display = "inline-block";
-                document.getElementById('rec-dot').style.background = "#ef4444";
-                document.getElementById('rec-dot').style.boxShadow = "0 0 10px #ef4444";
+                if (!stream) {{
+                    showClassroomNotice("Recording is not supported on this browser.", true);
+                    return;
+                }}
 
-                recSeconds = 0;
-                timerInterval = setInterval(() => {{
-                    recSeconds++;
-                    document.getElementById('rec-timer').innerText = formatTimer(recSeconds);
-                }}, 1000);
+                try {{
+                    recordedChunks = [];
+                    let options = {{}};
+                    if (isAudioOnly) {{
+                        if (typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported('audio/webm')) {{
+                            options = {{ mimeType: 'audio/webm' }};
+                        }} else if (typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported('audio/mp4')) {{
+                            options = {{ mimeType: 'audio/mp4' }};
+                        }}
+                    }} else {{
+                        if (typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported('video/webm')) {{
+                            options = {{ mimeType: 'video/webm' }};
+                        }} else if (typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported('video/mp4')) {{
+                            options = {{ mimeType: 'video/mp4' }};
+                        }}
+                    }}
 
-            }} catch (err) {{
-                alert("Recording request cancelled or permission not granted: " + err.message);
-            }}
-        }}
+                    try {{
+                        mediaRecorder = new MediaRecorder(stream, options);
+                    }} catch (e) {{
+                        mediaRecorder = new MediaRecorder(stream);
+                    }}
 
-        function stopRecording() {{
-            if (mediaRecorder && mediaRecorder.state !== 'inactive') {{
-                mediaRecorder.stop();
+                    mediaRecorder.ondataavailable = (e) => {{
+                        if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+                    }};
+
+                    mediaRecorder.onstop = () => {{
+                        clearInterval(timerInterval);
+                        isRecording = false;
+                        const recBtn = document.getElementById('rec-toggle-btn');
+                        if (recBtn) {{
+                            recBtn.innerHTML = "⏺️ Record Class";
+                            recBtn.className = "topbar-btn rec-btn topbar-full-width";
+                        }}
+                        const statusBar = document.getElementById('rec-status-bar');
+                        if (statusBar) statusBar.style.display = 'none';
+
+                        try {{
+                            stream.getTracks().forEach(t => t.stop());
+                        }} catch(e) {{}}
+
+                        if (recordedChunks.length > 0) {{
+                            const mime = mediaRecorder.mimeType || (isAudioOnly ? 'audio/webm' : 'video/webm');
+                            const blob = new Blob(recordedChunks, {{ type: mime }});
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.style.display = 'none';
+                            a.href = url;
+                            const d = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+                            const ext = mime.includes('mp4') ? (isAudioOnly ? 'm4a' : 'mp4') : (isAudioOnly ? 'weba' : 'webm');
+                            a.download = `Sisters_Academy_Class_${{d}}.${{ext}}`;
+                            document.body.appendChild(a);
+                            a.click();
+                            setTimeout(() => {{
+                                document.body.removeChild(a);
+                                window.URL.revokeObjectURL(url);
+                            }}, 500);
+                            showClassroomNotice("✅ Class recording saved to your Downloads folder!", false);
+                        }}
+                    }};
+
+                    stream.getTracks().forEach(track => {{
+                        track.onended = () => {{
+                            if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+                        }};
+                    }});
+
+                    mediaRecorder.start(1000);
+                    isRecording = true;
+
+                    const recBtn = document.getElementById('rec-toggle-btn');
+                    if (recBtn) {{
+                        recBtn.innerHTML = "⏹️ Stop & Save Recording";
+                        recBtn.className = "topbar-btn rec-btn-stop topbar-full-width";
+                    }}
+                    const statusBar = document.getElementById('rec-status-bar');
+                    if (statusBar) statusBar.style.display = 'flex';
+
+                    recSeconds = 0;
+                    timerInterval = setInterval(() => {{
+                        recSeconds++;
+                        const timerEl = document.getElementById('rec-timer');
+                        if (timerEl) timerEl.innerText = formatTimer(recSeconds);
+                    }}, 1000);
+
+                    if (isMobileDevice()) {{
+                        showClassroomNotice(isAudioOnly ? "🎙️ Mobile Voice Class Recording active! Tap '⏹️ Stop & Save' when done." : "📹 Mobile Class Camera & Audio Recording active! Tap '⏹️ Stop & Save' when done.", false);
+                    }}
+                }} catch (recInitErr) {{
+                    showClassroomNotice("Recording error: " + recInitErr.message, true);
+                }}
+            }} else {{
+                if (mediaRecorder && mediaRecorder.state !== 'inactive') {{
+                    mediaRecorder.stop();
+                }}
             }}
         }}
     """ if is_teacher else ""
+
+    component_height = 730 if is_teacher else 630
 
     html_code = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
         <script src="https://{domain_clean}/external_api.js"></script>
         <style>
             * {{ box-sizing: border-box; }}
@@ -1224,32 +1342,95 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 border-radius: 12px;
                 overflow: hidden;
                 border: 1px solid #334155;
+                transition: all 0.3s ease;
             }}
             .classroom-topbar {{
                 background: #1e293b;
-                padding: 10px 16px;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
+                padding: 8px 10px;
                 border-bottom: 1px solid #334155;
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 8px;
+                width: 100%;
+                box-sizing: border-box;
+                z-index: 10;
+            }}
+            .topbar-full-width {{
+                grid-column: span 2;
+            }}
+            @media (min-width: 680px) {{
+                .classroom-topbar {{
+                    display: flex;
+                    flex-direction: row;
+                    justify-content: space-between;
+                    align-items: center;
+                    gap: 8px;
+                    flex-wrap: wrap;
+                }}
+                .topbar-full-width {{
+                    grid-column: auto;
+                }}
+            }}
+            .topbar-btn {{
+                border: none;
+                padding: 8px 10px;
+                border-radius: 6px;
+                font-size: 0.83rem;
+                font-weight: 600;
+                cursor: pointer;
+                transition: 0.15s ease;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 5px;
+                white-space: nowrap;
+                text-align: center;
+                user-select: none;
+                min-height: 38px;
+                box-sizing: border-box;
             }}
             .fs-btn {{
                 background: #334155;
                 color: #f8fafc;
                 border: 1px solid #475569;
-                padding: 6px 14px;
-                border-radius: 6px;
-                font-size: 0.85rem;
-                font-weight: 600;
-                cursor: pointer;
-                transition: 0.2s;
             }}
             .fs-btn:hover {{ background: #475569; }}
+            .share-btn {{
+                background: #2563eb;
+                color: white;
+            }}
+            .share-btn:hover {{ background: #1d4ed8; }}
+            .wb-btn {{
+                background: #0d9488;
+                color: white;
+            }}
+            .wb-btn:hover {{ background: #0f766e; }}
+            .cam-btn {{
+                background: #6366f1;
+                color: white;
+            }}
+            .cam-btn:hover {{ background: #4f46e5; }}
+            .rec-btn {{
+                background: #ef4444;
+                color: white;
+            }}
+            .rec-btn:hover {{ background: #dc2626; }}
+            .rec-btn-stop {{
+                background: #10b981;
+                color: white;
+            }}
+            .rec-btn-stop:hover {{ background: #059669; }}
             #jitsi-container {{
                 flex: 1;
                 width: 100%;
-                height: 620px;
+                height: 560px;
                 background: #111827;
+                transition: height 0.3s ease;
+            }}
+            @media (max-width: 768px) {{
+                #jitsi-container {{
+                    height: 520px !important;
+                }}
             }}
             #jitsi-container iframe {{
                 width: 100% !important;
@@ -1260,28 +1441,138 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
     </head>
     <body>
         <div id="classroom-wrapper">
-            <div class="classroom-topbar">
-                <button class="fs-btn" onclick="toggleFullScreen()">⛶ Toggle Full Screen (In-App)</button>
-                {topbar_right}
-            </div>
+            {topbar_html}
             <div id="jitsi-container"></div>
         </div>
 
         <script>
-            function toggleFullScreen() {{
-                const el = document.getElementById('classroom-wrapper');
-                if (!document.fullscreenElement && !document.webkitFullscreenElement) {{
-                    if (el.requestFullscreen) {{
-                        el.requestFullscreen();
-                    }} else if (el.webkitRequestFullscreen) {{
-                        el.webkitRequestFullscreen();
+            let api = null;
+            let isExpandedMode = false;
+
+            function isMobileDevice() {{
+                return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || (window.innerWidth <= 768);
+            }}
+
+            function showClassroomNotice(msg, isWarning = true) {{
+                const banner = document.getElementById('classroom-notice-toast');
+                if (banner) {{
+                    banner.innerText = msg;
+                    banner.style.display = 'block';
+                    banner.style.background = isWarning ? '#b45309' : '#059669';
+                    setTimeout(() => {{
+                        banner.style.display = 'none';
+                    }}, 9000);
+                }} else {{
+                    alert(msg);
+                }}
+            }}
+
+            function switchCamera() {{
+                if (api) {{
+                    try {{
+                        api.executeCommand('toggleCamera');
+                        showClassroomNotice("📷 Switched Camera (Front ⇄ Back) to show Book / Qaida to students!", false);
+                    }} catch (e) {{
+                        console.error("Camera switch error:", e);
+                        try {{ api.executeCommand('toggleVideo'); }} catch(err) {{}}
+                        showClassroomNotice("Toggled camera state.", false);
+                    }}
+                }}
+            }}
+
+            function handleScreenShare() {{
+                if (!isMobileDevice()) {{
+                    if (api) {{
+                        try {{
+                            api.executeCommand('toggleShareScreen');
+                        }} catch (e) {{
+                            showClassroomNotice("Screen share error: " + e.message, true);
+                        }}
                     }}
                 }} else {{
-                    if (document.exitFullscreen) {{
-                        document.exitFullscreen();
-                    }} else if (document.webkitExitFullscreen) {{
-                        document.webkitExitFullscreen();
+                    const roomUrl = "https://{domain_clean}/{room_name}#config.startWithVideoMuted=true&config.prejoinPageEnabled=false";
+                    const deepLink = "intent://{domain_clean}/{room_name}#Intent;scheme=org.jitsi.meet;package=org.jitsi.meet;end";
+                    
+                    showClassroomNotice("📱 Launching Native Mobile Screen Share! (Broadcast your phone screen with PDFs/Qaida to students)", false);
+                    setTimeout(() => {{
+                        const opened = window.open(roomUrl, '_blank');
+                        if (!opened) {{
+                            window.location.href = deepLink;
+                        }}
+                    }}, 400);
+                }}
+            }}
+
+            function toggleWhiteboard() {{
+                if (api) {{
+                    try {{
+                        api.executeCommand('toggleWhiteboard');
+                        showClassroomNotice("✏️ Interactive Whiteboard opened! Draw lessons and write Arabic/Urdu notes for students.", false);
+                    }} catch (e) {{
+                        console.error("Whiteboard error:", e);
+                        showClassroomNotice("Could not toggle Whiteboard: " + e.message, true);
                     }}
+                }}
+            }}
+
+            function toggleFullScreen() {{
+                const wrapper = document.getElementById('classroom-wrapper');
+                const container = document.getElementById('jitsi-container');
+                const fsBtn = document.getElementById('fs-toggle-btn');
+                const isMobile = window.innerWidth <= 768;
+
+                // 1. Attempt standard browser/WebView fullscreen
+                try {{
+                    if (!document.fullscreenElement && !document.webkitFullscreenElement) {{
+                        if (container.requestFullscreen) {{
+                            container.requestFullscreen().catch(err => {{
+                                console.log("container.requestFullscreen non-fatal:", err);
+                            }});
+                        }} else if (container.webkitRequestFullscreen) {{
+                            container.webkitRequestFullscreen();
+                        }} else if (wrapper.requestFullscreen) {{
+                            wrapper.requestFullscreen().catch(err => {{}});
+                        }} else if (wrapper.webkitRequestFullscreen) {{
+                            wrapper.webkitRequestFullscreen();
+                        }}
+                    }} else {{
+                        if (document.exitFullscreen) {{
+                            document.exitFullscreen().catch(() => {{}});
+                        }} else if (document.webkitExitFullscreen) {{
+                            document.webkitExitFullscreen();
+                        }}
+                    }}
+                }} catch (e) {{
+                    console.log("Native fullscreen exception:", e);
+                }}
+
+                // 2. Simultaneously toggle expanded mobile full-height mode
+                isExpandedMode = !isExpandedMode;
+                if (isExpandedMode) {{
+                    container.style.height = "92vh";
+                    if (wrapper) {{
+                        wrapper.style.height = "100vh";
+                    }}
+                    if (window.frameElement) {{
+                        window.frameElement.style.height = "94vh";
+                        window.frameElement.style.maxHeight = "100vh";
+                        try {{
+                            window.frameElement.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+                        }} catch (err) {{}}
+                    }}
+                    if (fsBtn) fsBtn.innerHTML = "🗗 Exit Full Screen";
+                    try {{
+                        container.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+                    }} catch (err) {{}}
+                }} else {{
+                    container.style.height = isMobile ? "520px" : "560px";
+                    if (wrapper) {{
+                        wrapper.style.height = "100%";
+                    }}
+                    if (window.frameElement) {{
+                        window.frameElement.style.height = "{component_height}px";
+                    }}
+                    if (fsBtn) fsBtn.innerHTML = "⛶ Full Screen";
                 }}
             }}
 
@@ -1303,16 +1594,18 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                             startWithVideoMuted: true,
                             startWithAudioMuted: {'false' if is_teacher else 'true'},
                             disableDeepLinking: true,
-                            toolbarButtons: {tb_buttons}{student_restrictions_js}
+                            toolbarButtons: {tb_buttons},
+                            MAIN_TOOLBAR_BUTTONS: {tb_buttons}{student_restrictions_js}
                         }},
                         interfaceConfigOverwrite: {{
                             SHOW_JITSI_WATERMARK: false,
                             SHOW_WATERMARK_FOR_GUESTS: false,
                             TOOLBAR_ALWAYS_VISIBLE: true,
-                            TOOLBAR_BUTTONS: {tb_buttons}
+                            TOOLBAR_BUTTONS: {tb_buttons},
+                            MAIN_TOOLBAR_BUTTONS: {tb_buttons}
                         }}
                     }};
-                    const api = new JitsiMeetExternalAPI(domain, options);
+                    api = new JitsiMeetExternalAPI(domain, options);
                     
                     // Ensure iframe permissions are set
                     setTimeout(() => {{
@@ -1331,7 +1624,7 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
     </body>
     </html>
     """
-    components.html(html_code, height=680, scrolling=False)
+    components.html(html_code, height=component_height, scrolling=False)
 
 
 
@@ -1975,7 +2268,7 @@ def render_class_scheduler_widget(is_admin: bool = False):
                                 except Exception as e:
                                     st.error(f"Error deleting class: {e}")
 
-def render_live_studio_hero_card(is_admin: bool = False):
+def render_live_studio_hero_card(is_admin: bool = False, show_stop_form: bool = True):
     """
     Renders the modern 2-column Live Class Broadcast Studio top Hero Card:
     - Left side: Live Status Badge (pulsing green dot when live / slate badge when offline),
@@ -2044,22 +2337,23 @@ def render_live_studio_hero_card(is_admin: bool = False):
             </div>
             """, unsafe_allow_html=True)
 
-            with st.form(f"hero_stop_form_{'adm' if is_admin else 'tch'}"):
-                btn_stop = st.form_submit_button("🛑 End Live Class for All", type="primary", use_container_width=True)
-                if btn_stop:
-                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    try:
-                        with get_db_connection() as conn_w:
-                            conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
-                            conn_w.commit()
-                    except Exception as e:
-                        print(f"Error ending live class: {e}")
+            if show_stop_form:
+                with st.form(f"hero_stop_form_{'adm' if is_admin else 'tch'}"):
+                    btn_stop = st.form_submit_button("🛑 End Live Class for All", type="primary", use_container_width=True)
+                    if btn_stop:
+                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
+                                conn_w.commit()
+                        except Exception as e:
+                            print(f"Error ending live class: {e}")
 
-                    if is_supabase_active():
-                        supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
+                        if is_supabase_active():
+                            supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
 
-                    st.warning("Live class ended. Students returned to offline waiting status.")
-                    st.rerun()
+                        st.warning("Live class ended. Students returned to offline waiting status.")
+                        st.rerun()
 
         else:
             st.markdown("""
@@ -2130,6 +2424,81 @@ def render_live_studio_hero_card(is_admin: bool = False):
         st.link_button("📂 Open Google Drive Folder", DEFAULT_DRIVE_FOLDER_URL, use_container_width=True)
 
     return is_live, room_name, server
+
+def render_top_quick_actions_bar():
+    """
+    Renders a persistent, mobile-friendly Top Account Bar right at the top of the main screen
+    giving instant 1-tap access to Change Password and Log Out without opening the sidebar.
+    """
+    role_label = "👑 Super Admin" if st.session_state.role == 'admin' else ("👩‍🏫 Teacher" if st.session_state.role == 'teacher' else "🎓 Student")
+    display_user = f"{st.session_state.name} (@{st.session_state.username})" if st.session_state.name else f"@{st.session_state.username}"
+
+    col_u, col_pwd, col_out = st.columns([2, 1, 1], gap="small")
+    with col_u:
+        st.markdown(f"""
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:6px 12px; display:flex; align-items:center; gap:8px; box-shadow:0 1px 3px rgba(0,0,0,0.04); min-height:44px; box-sizing:border-box;">
+            <span style="font-weight:700; color:#1e293b; font-size:0.92rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">👤 {display_user}</span>
+            <span style="font-size:0.75rem; background:#e0e7ff; color:#4338ca; padding:2px 8px; border-radius:12px; font-weight:700; white-space:nowrap;">{role_label}</span>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_pwd:
+        with st.popover("🔑 Change Password", use_container_width=True):
+            st.markdown(f"**Change Password (@{st.session_state.username})**")
+            with st.form("topbar_pwd_form"):
+                curr_pwd = st.text_input("Current Password", type="password", key="tb_curr_pwd")
+                new_pwd = st.text_input("New Password", type="password", key="tb_new_pwd")
+                confirm_pwd = st.text_input("Confirm New Password", type="password", key="tb_conf_pwd")
+                if st.form_submit_button("Save Password", type="primary", use_container_width=True):
+                    if not curr_pwd or not new_pwd:
+                        st.error("Please fill both password fields.")
+                    elif len(new_pwd.strip()) < 4:
+                        st.error("New password must be at least 4 characters long.")
+                    elif new_pwd != confirm_pwd:
+                        st.error("New password and confirm password do not match.")
+                    else:
+                        try:
+                            with get_db_connection() as conn_chk:
+                                c_chk = conn_chk.cursor()
+                                c_chk.execute("SELECT password, password_hash FROM users WHERE username = ?", (st.session_state.username,))
+                                u_row = c_chk.fetchone()
+
+                            if not u_row:
+                                st.error("User record not found.")
+                            else:
+                                raw_p = u_row['password'] if 'password' in u_row.keys() else ''
+                                h_p = u_row['password_hash']
+                                curr_h = hash_password(curr_pwd)
+
+                                is_match = (raw_p and curr_pwd == raw_p) or (curr_h == h_p)
+                                if not is_match:
+                                    st.error("Incorrect current password.")
+                                else:
+                                    new_h = hash_password(new_pwd.strip())
+                                    with get_db_connection() as conn_w:
+                                        conn_w.execute("""
+                                        UPDATE users SET password = ?, password_hash = ? WHERE username = ?
+                                        """, (new_pwd.strip(), new_h, st.session_state.username))
+                                        conn_w.commit()
+
+                                    if is_supabase_active():
+                                        supabase_request("PATCH", "users", {
+                                            "password": new_pwd.strip(),
+                                            "password_hash": new_h
+                                        }, params=f"username=eq.{st.session_state.username}")
+
+                                    st.success("✅ Password updated successfully!")
+                        except Exception as e:
+                            st.error(f"Error updating password: {e}")
+    with col_out:
+        if st.button("🚪 Log Out", key="main_top_logout_btn", use_container_width=True):
+            st.session_state.logged_in = False
+            st.session_state.username = None
+            st.session_state.role = None
+            st.session_state.name = None
+            st.session_state.live_joined = False
+            st.session_state.joined_live_class = False
+            st.rerun()
+    st.markdown("<div style='margin-bottom: 12px;'></div>", unsafe_allow_html=True)
 
 
 # ==========================================
@@ -2362,18 +2731,73 @@ def render_admin_dashboard():
     # ---------------------------------------------
     with tab_live:
         st.subheader("Live Class Broadcast Engine")
-        is_live, room_name, server = render_live_studio_hero_card(is_admin=True)
-
-        st.markdown("---")
 
         if is_live:
+            # 1. Top status header with quick End button at top
+            col_live_hdr, col_live_top_btn = st.columns([2.5, 1.2], gap="small")
+            with col_live_hdr:
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #15803d 0%, #166534 100%); color: white; padding: 10px 16px; border-radius: 10px; box-shadow: 0 4px 15px rgba(22, 101, 52, 0.25);">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="width:10px; height:10px; border-radius:50%; background:#ef4444; display:inline-block; box-shadow:0 0 8px #ef4444;"></span>
+                        <b style="font-size:1.0rem;">🔴 BROADCAST STATUS: LIVE NOW</b>
+                    </div>
+                    <div style="font-size:0.85rem; opacity:0.95; margin-top:2px;"><b>{session_topic}</b> (Host: {host_teacher} | Started: {started_at})</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with col_live_top_btn:
+                with st.form("end_class_top_adm"):
+                    btn_top = st.form_submit_button("🛑 End Live Class", type="primary", use_container_width=True)
+                    if btn_top:
+                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
+                                conn_w.commit()
+                        except Exception as e:
+                            print(f"Error ending live class: {e}")
+
+                        if is_supabase_active():
+                            supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
+
+                        st.warning("Live class ended.")
+                        st.rerun()
+
+            st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
+
+            # 2. Render the Live Classroom video player FIRST
             render_jitsi_classroom(
                 domain=server,
                 room_name=room_name,
                 display_name=f"{st.session_state.name} (Super Admin)",
                 is_teacher=True
             )
+
+            # 3. Big "🛑 End Live Class for All" button DIRECTLY BELOW the live video
+            st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+            with st.form("end_class_bottom_mobile_adm"):
+                btn_stop = st.form_submit_button("🛑 End Live Class for All", type="primary", use_container_width=True)
+                if btn_stop:
+                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    try:
+                        with get_db_connection() as conn_w:
+                            conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
+                            conn_w.commit()
+                    except Exception as e:
+                        print(f"Error ending live class: {e}")
+
+                    if is_supabase_active():
+                        supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
+
+                    st.warning("Live class ended. Students returned to offline waiting status.")
+                    st.rerun()
+
+            st.markdown("---")
+            render_live_studio_hero_card(is_admin=True, show_stop_form=False)
+
         else:
+            is_live, room_name, server = render_live_studio_hero_card(is_admin=True, show_stop_form=True)
+            st.markdown("---")
             st.info("💡 To begin teaching or broadcasting, configure your topic and click **'Start Live Class Now'** above.")
 
         st.markdown("---")
@@ -2745,19 +3169,74 @@ def render_teacher_dashboard():
     # ---------------------------------------------
     with tab_live:
         st.subheader("Live Class Broadcast Engine")
-        is_live, room_name, server = render_live_studio_hero_card(is_admin=False)
-
-        st.markdown("---")
 
         if is_live:
-            # Active in-app classroom embed with fullscreen and screen recorder buttons
+            # 1. Top status header with quick End button at top
+            col_live_hdr, col_live_top_btn = st.columns([2.5, 1.2], gap="small")
+            with col_live_hdr:
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #15803d 0%, #166534 100%); color: white; padding: 10px 16px; border-radius: 10px; box-shadow: 0 4px 15px rgba(22, 101, 52, 0.25);">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="width:10px; height:10px; border-radius:50%; background:#ef4444; display:inline-block; box-shadow:0 0 8px #ef4444;"></span>
+                        <b style="font-size:1.0rem;">🔴 BROADCAST STATUS: LIVE NOW</b>
+                    </div>
+                    <div style="font-size:0.85rem; opacity:0.95; margin-top:2px;"><b>{session_topic}</b> (Host: {st.session_state.name} | Started: {started_at})</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with col_live_top_btn:
+                with st.form("end_class_top_tch"):
+                    btn_top = st.form_submit_button("🛑 End Live Class", type="primary", use_container_width=True)
+                    if btn_top:
+                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
+                                conn_w.commit()
+                        except Exception as e:
+                            print(f"Error ending live class: {e}")
+
+                        if is_supabase_active():
+                            supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
+
+                        st.warning("Live class ended.")
+                        st.rerun()
+
+            st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
+
+            # 2. Render Live Classroom video player FIRST
             render_jitsi_classroom(
                 domain=server,
                 room_name=room_name,
                 display_name=f"{st.session_state.name} (Teacher)",
                 is_teacher=True
             )
+
+            # 3. Big "🛑 End Live Class for All" button DIRECTLY BELOW the live video
+            st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+            with st.form("end_class_bottom_mobile_tch"):
+                btn_stop = st.form_submit_button("🛑 End Live Class for All", type="primary", use_container_width=True)
+                if btn_stop:
+                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    try:
+                        with get_db_connection() as conn_w:
+                            conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
+                            conn_w.commit()
+                    except Exception as e:
+                        print(f"Error ending live class: {e}")
+
+                    if is_supabase_active():
+                        supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
+
+                    st.warning("Live class ended. Students returned to offline waiting status.")
+                    st.rerun()
+
+            st.markdown("---")
+            # Quick Stats & Google Drive folder button
+            render_live_studio_hero_card(is_admin=False, show_stop_form=False)
+
         else:
+            is_live, room_name, server = render_live_studio_hero_card(is_admin=False, show_stop_form=True)
+            st.markdown("---")
             st.info("💡 To begin teaching, configure your topic and click **'Start Live Class Now'** above.")
 
         st.markdown("---")
@@ -3320,9 +3799,9 @@ def render_student_dashboard():
                 </div>
                 """, unsafe_allow_html=True)
 
-                col_w1, col_w2 = st.columns([3, 1])
+                col_w1, col_w2 = st.columns([2.5, 1.2])
                 with col_w2:
-                    with st.form("leave_waiting_lounge_form"):
+                    with st.form("leave_waiting_lounge_top_form"):
                         if st.form_submit_button("🚪 Leave Waiting Lounge", use_container_width=True):
                             st.session_state.in_waiting_lounge = False
                             st.rerun()
@@ -3335,6 +3814,12 @@ def render_student_dashboard():
                     display_name=f"{st.session_state.name} (Student - Waiting Lounge)",
                     is_teacher=False
                 )
+
+                st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+                with st.form("leave_waiting_lounge_bottom_student"):
+                    if st.form_submit_button("🚪 Leave Waiting Lounge", type="primary", use_container_width=True):
+                        st.session_state.in_waiting_lounge = False
+                        st.rerun()
 
             else:
                 st.markdown("""
@@ -3454,9 +3939,9 @@ def render_student_dashboard():
                     is_teacher=False
                 )
 
-
-                with st.form("leave_live_form"):
-                    if st.form_submit_button("Leave Live Room"):
+                st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+                with st.form("leave_live_bottom_student"):
+                    if st.form_submit_button("🚪 Leave Live Class", type="primary", use_container_width=True):
                         st.session_state.live_joined = False
                         st.session_state.joined_live_class = False
                         st.rerun()
@@ -3796,6 +4281,7 @@ def main():
                 st.session_state.joined_live_class = False
                 st.rerun()
 
+    render_top_quick_actions_bar()
     if st.session_state.role == 'admin':
         render_admin_dashboard()
     elif st.session_state.role == 'teacher':
