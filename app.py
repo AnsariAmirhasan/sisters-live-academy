@@ -402,6 +402,15 @@ def init_database():
     conn = get_db()
     c = conn.cursor()
 
+    # 0. App Metadata table — used for one-time seed flag so deleted accounts
+    #    do NOT reappear after st.rerun() re-triggers init_database()
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS app_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )
+    """)
+
     # 1. Users
     c.execute("""
     CREATE TABLE IF NOT EXISTS users (
@@ -617,7 +626,7 @@ def init_database():
     # ---------------------------------------------
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # (a) Enforce Super Admin (Username: admin, Password: Amir@7861)
+    # (a) ALWAYS enforce Super Admin — admin can never be deleted/locked out
     admin_pwd = "Amir@7861"
     admin_hash = hash_password(admin_pwd)
     c.execute("SELECT id FROM users WHERE username = 'admin'")
@@ -633,37 +642,43 @@ def init_database():
         VALUES ('admin', ?, ?, 'admin', 'Super Admin', 1, ?)
         """, (admin_pwd, admin_hash, now_str))
 
-    # (b) Pre-seed Default Teacher Accounts (INSERT OR IGNORE preserves custom passwords)
-    t1_hash = hash_password("teacher123")
-    t2_hash = hash_password("teacher456")
+    # (b) & (c) ONLY seed default teachers & students ONCE.
+    #     After that, any accounts deleted by Teacher/Admin must stay deleted.
+    #     We track this via app_meta key 'initial_seed_done'.
+    c.execute("SELECT value FROM app_meta WHERE key = 'initial_seed_done'")
+    seed_done = c.fetchone()
 
-    c.execute("""
-    INSERT OR IGNORE INTO users (username, password, password_hash, role, full_name, is_active, created_at)
-    VALUES ('teacher', 'teacher123', ?, 'teacher', 'Lead Teacher', 1, ?)
-    """, (t1_hash, now_str))
+    if not seed_done:
+        # Pre-seed Default Teacher Accounts
+        t1_hash = hash_password("teacher123")
+        t2_hash = hash_password("teacher456")
 
-    c.execute("""
-    INSERT OR IGNORE INTO users (username, password, password_hash, role, full_name, is_active, created_at)
-    VALUES ('teacher1', 'teacher123', ?, 'teacher', 'Teacher 1', 1, ?)
-    """, (t1_hash, now_str))
-
-    c.execute("""
-    INSERT OR IGNORE INTO users (username, password, password_hash, role, full_name, is_active, created_at)
-    VALUES ('teacher2', 'teacher456', ?, 'teacher', 'Teacher 2', 1, ?)
-    """, (t2_hash, now_str))
-
-    c.execute("UPDATE users SET password = 'teacher123' WHERE username IN ('teacher', 'teacher1') AND (password IS NULL OR password = '')")
-    c.execute("UPDATE users SET password = 'teacher456' WHERE username = 'teacher2' AND (password IS NULL OR password = '')")
-
-    # (c) Pre-seed 10 Default Student Accounts (INSERT OR IGNORE preserves custom passwords)
-    st_pwd_hash = hash_password("pass123")
-    for i in range(1, 11):
-        u_name = f"student{i}"
         c.execute("""
         INSERT OR IGNORE INTO users (username, password, password_hash, role, full_name, is_active, created_at)
-        VALUES (?, 'pass123', ?, 'student', ?, 1, ?)
-        """, (u_name, st_pwd_hash, f"Student {i}", now_str))
-        c.execute("UPDATE users SET password = 'pass123' WHERE username = ? AND (password IS NULL OR password = '')", (u_name,))
+        VALUES ('teacher', 'teacher123', ?, 'teacher', 'Lead Teacher', 1, ?)
+        """, (t1_hash, now_str))
+
+        c.execute("""
+        INSERT OR IGNORE INTO users (username, password, password_hash, role, full_name, is_active, created_at)
+        VALUES ('teacher1', 'teacher123', ?, 'teacher', 'Teacher 1', 1, ?)
+        """, (t1_hash, now_str))
+
+        c.execute("""
+        INSERT OR IGNORE INTO users (username, password, password_hash, role, full_name, is_active, created_at)
+        VALUES ('teacher2', 'teacher456', ?, 'teacher', 'Teacher 2', 1, ?)
+        """, (t2_hash, now_str))
+
+        # Pre-seed 10 Default Student Accounts
+        st_pwd_hash = hash_password("pass123")
+        for i in range(1, 11):
+            u_name = f"student{i}"
+            c.execute("""
+            INSERT OR IGNORE INTO users (username, password, password_hash, role, full_name, is_active, created_at)
+            VALUES (?, 'pass123', ?, 'student', ?, 1, ?)
+            """, (u_name, st_pwd_hash, f"Student {i}", now_str))
+
+        # Mark initial seed as done — will never re-seed on future reruns
+        c.execute("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('initial_seed_done', '1')")
 
     # Seed initial announcement if empty
     c.execute("SELECT COUNT(*) as cnt FROM announcements")
@@ -715,6 +730,47 @@ init_db = init_database
 
 # Run DB initialization once
 init_database()
+
+
+def delete_user_account(target_username: str, caller_role: str, caller_username: str) -> tuple:
+    """
+    Shared helper: safely deletes a user account and their associated fee records.
+    Returns (success: bool, message: str)
+    """
+    # Guard: never delete admin
+    if target_username == 'admin':
+        return False, "Cannot delete the Super Admin account."
+
+    # Guard: never delete yourself
+    if target_username == caller_username:
+        return False, "You cannot delete your own account."
+
+    # Role-based permission check
+    with get_db_connection() as conn_w:
+        row = conn_w.execute("SELECT id, role FROM users WHERE username = ?", (target_username,)).fetchone()
+        if not row:
+            return False, f"Account '@{target_username}' not found."
+
+        target_id = row['id']
+        target_role = row['role']
+
+        # Teachers can only delete students
+        if caller_role == 'teacher' and target_role != 'student':
+            return False, "Teachers can only delete student accounts."
+
+        # Admins can delete students and teachers
+        if caller_role == 'admin' and target_role == 'admin':
+            return False, "Cannot delete another admin account."
+
+        try:
+            # Remove associated fee records first (no orphan rows)
+            conn_w.execute("DELETE FROM fees WHERE student_username = ?", (target_username,))
+            # Delete the user account
+            conn_w.execute("DELETE FROM users WHERE id = ?", (target_id,))
+            conn_w.commit()
+            return True, f"Account '@{target_username}' permanently deleted."
+        except Exception as e:
+            return False, f"Delete failed: {e}"
 
 def get_payment_settings():
     """Fetches payment settings (UPI, Number, Instructions) from Supabase or SQLite"""
@@ -2307,23 +2363,20 @@ def render_admin_dashboard():
                                 st.rerun()
 
                 with col_st2:
-                    with st.form(f"delete_user_form_{sel_user['id']}"):
-                        if st.form_submit_button("🗑️ Delete Account Permanently", use_container_width=True):
-                            if sel_user['username'] == 'admin':
-                                st.error("Cannot delete the master Super Admin account.")
-                            else:
-                                try:
-                                    with get_db_connection() as conn_w:
-                                        conn_w.execute("DELETE FROM users WHERE id = ?", (sel_user['id'],))
-                                        conn_w.commit()
-                                except Exception as e:
-                                    print(f"Error deleting user: {e}")
-
-                                if is_supabase_active():
-                                    supabase_request("DELETE", "users", params=f"id=eq.{sel_user['id']}")
-
-                                st.success(f"Account @{sel_user['username']} deleted.")
-                                st.rerun()
+                    admin_del_key = f"admin_del_user_{sel_user['id']}"
+                    if st.button("🗑️ Delete Account Permanently", key=admin_del_key, use_container_width=True, type="primary"):
+                        ok, msg = delete_user_account(
+                            sel_user['username'],
+                            st.session_state.get('role', 'admin'),
+                            st.session_state.get('username', '')
+                        )
+                        if ok:
+                            if is_supabase_active():
+                                supabase_request("DELETE", "users", params=f"id=eq.{sel_user['id']}")
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
 
     # ---------------------------------------------
     # ADMIN TAB 1.5: FEES MANAGEMENT
@@ -3140,18 +3193,20 @@ def render_teacher_dashboard():
                                     st.rerun()
 
                         with c_b3:
-                            with st.form(f"del_st_form_{s['id']}"):
-                                if st.form_submit_button("🗑️ Delete Account", use_container_width=True):
-                                    try:
-                                        with get_db_connection() as conn_w:
-                                            conn_w.execute("DELETE FROM users WHERE id = ?", (s['id'],))
-                                            conn_w.commit()
-                                    except Exception as e:
-                                        print(f"Error deleting user: {e}")
+                            del_key = f"teacher_del_stu_{s['username']}"
+                            if st.button("🗑️ Delete Permanently", key=del_key, use_container_width=True, type="primary"):
+                                ok, msg = delete_user_account(
+                                    s['username'],
+                                    st.session_state.get('role', 'teacher'),
+                                    st.session_state.get('username', '')
+                                )
+                                if ok:
                                     if is_supabase_active():
                                         supabase_request("DELETE", "users", params=f"id=eq.{s['id']}")
-                                    st.success("Student removed.")
+                                    st.success(msg)
                                     st.rerun()
+                                else:
+                                    st.error(msg)
 
     # Close connection cleanly
     try:
