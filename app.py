@@ -400,7 +400,9 @@ def process_google_drive_link(raw_link: str) -> tuple[str, str]:
 
 def upload_file_to_google_drive(file_obj, filename: str, folder_id: str = DEFAULT_DRIVE_FOLDER_ID) -> tuple[bool, str, str]:
     """
-    Uploads a video directly to Google Drive folder using service account credentials if configured.
+    Uploads a file directly to the Academy Google Drive folder.
+    Automatically creates/uses a date-wise subfolder (e.g. Class_Notes_YYYY-MM-DD)
+    inside folder_id so all lecture recordings and study notes are neatly organized by date.
     Returns (success: bool, web_view_link: str, error_message: str).
     """
     try:
@@ -425,12 +427,56 @@ def upload_file_to_google_drive(file_obj, filename: str, folder_id: str = DEFAUL
         )
         service = build('drive', 'v3', credentials=creds)
 
+        # Organize into a date-wise subfolder: e.g. Class_Notes_2026-10-31
+        today_date_str = str(datetime.date.today())
+        date_folder_name = f"Class_Notes_{today_date_str}"
+        target_parent_id = folder_id
+
+        try:
+            query = f"'{folder_id}' in parents and name = '{date_folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+            res = service.files().list(q=query, fields="files(id, name)").execute()
+            existing_f = res.get('files', [])
+            if existing_f:
+                target_parent_id = existing_f[0]['id']
+            else:
+                fld_meta = {
+                    'name': date_folder_name,
+                    'mimeType': 'application/vnd.google-apps.folder',
+                    'parents': [folder_id]
+                }
+                new_f = service.files().create(body=fld_meta, fields='id').execute()
+                target_parent_id = new_f.get('id', folder_id)
+                try:
+                    service.permissions().create(fileId=target_parent_id, body={'type': 'anyone', 'role': 'reader'}).execute()
+                except Exception:
+                    pass
+        except Exception as e_sub:
+            print(f"Subfolder organization notice: {e_sub}")
+            target_parent_id = folder_id
+
+        ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        mime_map = {
+            'webm': 'audio/webm',
+            'mp3': 'audio/mpeg',
+            'wav': 'audio/wav',
+            'm4a': 'audio/mp4',
+            'ogg': 'audio/ogg',
+            'pdf': 'application/pdf',
+            'mp4': 'video/mp4',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'png': 'image/png',
+            'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'txt': 'text/plain'
+        }
+        chosen_mimetype = mime_map.get(ext, 'application/octet-stream')
+
         file_metadata = {
             'name': filename,
-            'parents': [folder_id]
+            'parents': [target_parent_id]
         }
         file_obj.seek(0)
-        media = MediaIoBaseUpload(file_obj, mimetype='video/webm', resumable=True)
+        media = MediaIoBaseUpload(file_obj, mimetype=chosen_mimetype, resumable=True)
         uploaded = service.files().create(
             body=file_metadata,
             media_body=media,
@@ -4696,14 +4742,14 @@ def render_teacher_dashboard():
         st.markdown("---")
 
         # Quick Actions & Direct Auto-Uploader
-        col_up_btn1, col_up_btn2 = st.columns([1.5, 1])
+        col_up_btn1, col_up_btn2 = st.columns([1.6, 1])
         with col_up_btn1:
-            st.link_button("📂 Open Google Drive Folder", DEFAULT_DRIVE_FOLDER_URL, type="primary", use_container_width=True)
-            st.caption("Click to open the Google Drive folder in a new tab and drop your downloaded recording files directly.")
+            st.link_button("📂 Open Google Drive Folder (Upload Daily Date Folders)", DEFAULT_DRIVE_FOLDER_URL, type="primary", use_container_width=True)
+            st.caption("💡 Click to open the Google Drive folder in a new tab. Aap yahan date ke hisaab se folder (e.g. `Class_Notes_2026-10-31`) banakar audio lectures, Tajweed notes aur worksheets directly drop kar sakte hain.")
         with col_up_btn2:
             st.info(f"📁 Folder ID: `{DEFAULT_DRIVE_FOLDER_ID}`")
 
-        render_quick_recording_uploader(key_suffix="teacher_rec_tab", title="Direct Video Uploader (Local Server + Google Drive Sync)")
+        render_quick_recording_uploader(key_suffix="teacher_rec_tab", title="Direct Audio Lecture Uploader (Auto-Syncs Date Folder to Google Drive)")
 
         st.markdown("---")
         st.markdown("#### 🎬 Spotlight Individual Video Player")
@@ -5462,11 +5508,33 @@ def render_student_dashboard():
     with tab_library:
         st.subheader("📚 Study Library & Recorded Classes")
 
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #1e40af 0%, #312e81 100%); color: white; border-radius: 12px; padding: 16px 20px; margin-bottom: 12px; box-shadow: 0 4px 15px rgba(30, 64, 175, 0.25);">
+            <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+                <span style="font-size:2.2rem; line-height:1;">📂</span>
+                <div>
+                    <div style="font-weight:800; font-size:1.15rem; color:#ffffff;">Academy Study Notes & Recorded Classes Cloud Drive</div>
+                    <div style="font-size:0.9rem; color:#e0e7ff; margin-top:2px;">
+                        Tamam daily class audio/video lectures, Tajweed/Qaida PDF books, aur study notes yahan date ke hisaab se available hain. Aap yahan se asani se download kar sakte hain.
+                    </div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.link_button(
+            "📥 Open Google Drive Folder to View & Download All Study Notes & Lectures",
+            DEFAULT_DRIVE_FOLDER_URL,
+            type="primary",
+            use_container_width=True
+        )
+        st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+
         # Embedded Google Drive Folder Viewer: real-time auto-sync for all students
         render_embedded_drive_folder(
             folder_id=DEFAULT_DRIVE_FOLDER_ID,
             folder_url=DEFAULT_DRIVE_FOLDER_URL,
-            title="📚 Class Recordings & Notes Google Drive Folder",
+            title="📚 Live Google Drive Folder Viewer",
             key_suffix="student"
         )
         st.markdown("---")
