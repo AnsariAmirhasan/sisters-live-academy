@@ -1132,6 +1132,16 @@ def init_database():
                 ?, ?, ?, ?)
         """, (demo_drive_url, embed_url, dl_url, now_str))
 
+    # 8.6. Live Board Table (High Clarity Book & Whiteboard Sync)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS live_board (
+        id INTEGER PRIMARY KEY,
+        image_data TEXT,
+        mime_type TEXT,
+        updated_at TEXT
+    )
+    """)
+
     # One-time cleanup of legacy demo Math/Physics entries
     c.execute("SELECT value FROM app_meta WHERE key = 'legacy_cleanup_done_v1'")
     if not c.fetchone():
@@ -1144,19 +1154,14 @@ def init_database():
         except Exception as e:
             print(f"Cleanup error: {e}")
 
-    # Seed initial scheduled class if empty
-    c.execute("SELECT COUNT(*) as cnt FROM scheduled_classes")
-    if c.fetchone()['cnt'] == 0:
-        c.execute("SELECT value FROM app_meta WHERE key = 'initial_schedule_seeded'")
-        if not c.fetchone():
-            tomorrow_str = str(datetime.date.today() + datetime.timedelta(days=1))
-            c.execute("""
-            INSERT INTO scheduled_classes (topic, subject, teacher_name, scheduled_date, scheduled_time, room_name, notes, status, allow_waiting_room)
-            VALUES 
-                ('Urdu Grammar & Nazm Reading Lesson 1', 'Urdu / Arabic', 'Teacher 1', ?, '18:00', 'SistersLiveClass_MasterRoom', 'Bring notebooks. Waiting lounge is open for early practice!', 'Scheduled', 1),
-                ('Arabic Grammar (Nahw & Sarf) Essentials', 'Urdu / Arabic', 'Teacher 2', ?, '17:30', 'SistersLiveClass_MasterRoom', 'Review previous vocabulary before entering.', 'Scheduled', 1)
-            """, (tomorrow_str, str(datetime.date.today() + datetime.timedelta(days=2))))
-            c.execute("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('initial_schedule_seeded', '1')")
+    # One-time permanent cleanup of auto-seeded sample classes (never re-seeded)
+    c.execute("SELECT value FROM app_meta WHERE key = 'purge_auto_schedules_v2'")
+    if not c.fetchone():
+        try:
+            c.execute("DELETE FROM scheduled_classes WHERE topic LIKE '%Urdu Grammar & Nazm Reading Lesson 1%' OR topic LIKE '%Arabic Grammar (Nahw & Sarf) Essentials%' OR notes LIKE '%Bring notebooks%' OR notes LIKE '%Review previous vocabulary%'")
+            c.execute("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('purge_auto_schedules_v2', '1')")
+        except Exception as e:
+            print(f"Purge auto schedules error: {e}")
 
     conn.commit()
     try:
@@ -1642,20 +1647,26 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                     <button type="button" class="wb-tool-btn" onclick="setLineWidth(14, this)">Thick</button>
                 </div>
                 <div class="wb-group">
+                    <button type="button" class="wb-tool-btn" onclick="zoomCanvas(0.25)">🔍+ Zoom</button>
+                    <button type="button" class="wb-tool-btn" onclick="zoomCanvas(-0.25)">🔍- Out</button>
+                    <button type="button" class="wb-tool-btn" onclick="resetCanvasZoom()">🔄 Reset Fit</button>
+                </div>
+                <div class="wb-group">
                     <button type="button" class="wb-tool-btn" style="background:#2563eb; color:white;" onclick="triggerBookImagePicker()">📖 Load Book Page</button>
                     <button type="button" class="wb-tool-btn" style="background:#475569; color:white;" onclick="clearCanvasDrawing()">🗑️ Clear</button>
                     <button type="button" class="wb-tool-btn" style="background:#059669; color:white;" onclick="forceSyncCanvasToAll()">📤 Sync to Students</button>
+                    <button type="button" class="wb-tool-btn" id="toggle-video-tiles-btn" style="background:#334155; color:white;" onclick="toggleStudentTiles()">👥 Show Video Tiles</button>
                     <button type="button" class="wb-tool-btn" style="background:#dc2626; color:white;" onclick="toggleWhiteboard()">✖️ Close</button>
                 </div>
                 <div class="wb-group wb-layout-group">
                     <span style="font-size:0.72rem; color:#94a3b8;">View:</span>
-                    <button type="button" class="wb-tool-btn active" onclick="setLayoutMode('split', this)">🌓 Split</button>
-                    <button type="button" class="wb-tool-btn" onclick="setLayoutMode('board', this)">📐 Board</button>
+                    <button type="button" class="wb-tool-btn active" onclick="setLayoutMode('board', this)">📐 Board</button>
+                    <button type="button" class="wb-tool-btn" onclick="setLayoutMode('split', this)">🌓 Split</button>
                     <button type="button" class="wb-tool-btn" onclick="setLayoutMode('video', this)">📹 Video</button>
                 </div>
             </div>
             <div class="wb-canvas-container" id="wb-canvas-box">
-                <canvas id="teaching-canvas" width="1280" height="720"></canvas>
+                <canvas id="teaching-canvas"></canvas>
             </div>
         </div>
         """
@@ -1668,21 +1679,27 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                     <span style="color:#38bdf8; font-weight:700; font-size:0.82rem;">🔴 Teacher's Live Whiteboard & Book Page</span>
                     <span id="student-wb-status" style="background:#059669; color:white; border-radius:4px; padding:2px 6px; font-size:0.72rem; font-weight:600;">● Live Synced</span>
                 </div>
-                <div class="wb-group wb-layout-group">
+                <div class="wb-group">
+                    <button type="button" class="wb-tool-btn" onclick="zoomCanvas(0.25)">🔍+ Zoom</button>
+                    <button type="button" class="wb-tool-btn" onclick="zoomCanvas(-0.25)">🔍- Out</button>
+                    <button type="button" class="wb-tool-btn" onclick="resetCanvasZoom()">🔄 Reset Fit</button>
                     <button type="button" class="wb-tool-btn" style="background:#0284c7; color:white;" onclick="requestWbSync()">🔄 Re-Sync</button>
-                    <button type="button" class="wb-tool-btn active" onclick="setLayoutMode('split', this)">🌓 Split</button>
-                    <button type="button" class="wb-tool-btn" onclick="setLayoutMode('board', this)">📐 Board</button>
-                    <button type="button" class="wb-tool-btn" onclick="setLayoutMode('video', this)">📹 Video</button>
+                    <button type="button" class="wb-tool-btn" id="toggle-video-tiles-btn" style="background:#334155; color:white;" onclick="toggleStudentTiles()">👥 Show Video Tiles</button>
                     <button type="button" class="wb-tool-btn" style="background:#dc2626; color:white;" onclick="toggleWhiteboard()">✖️ Hide</button>
+                </div>
+                <div class="wb-group wb-layout-group">
+                    <button type="button" class="wb-tool-btn active" onclick="setLayoutMode('board', this)">📐 Board</button>
+                    <button type="button" class="wb-tool-btn" onclick="setLayoutMode('split', this)">🌓 Split</button>
+                    <button type="button" class="wb-tool-btn" onclick="setLayoutMode('video', this)">📹 Video</button>
                 </div>
             </div>
             <div class="wb-canvas-container" id="wb-canvas-box">
-                <canvas id="teaching-canvas" width="1280" height="720"></canvas>
+                <canvas id="teaching-canvas"></canvas>
             </div>
         </div>
         """
 
-    component_height = 680 if is_teacher else 640
+    component_height = 760 if is_teacher else 700
 
     html_code = f"""
     <!DOCTYPE html>
@@ -1863,26 +1880,36 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             }}
             .wb-canvas-container {{
                 width: 100%;
-                height: 280px;
+                height: 540px;
                 position: relative;
                 background: #020617;
-                overflow: hidden;
-                touch-action: none;
+                overflow-x: auto;
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+                touch-action: pan-x pan-y;
                 transition: height 0.25s ease;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+            }}
+            #classroom-master-wrapper.is-fullscreen .wb-canvas-container {{
+                height: calc(100vh - 140px) !important;
             }}
             #teaching-canvas {{
-                width: 100%;
-                height: 100%;
                 display: block;
+                max-width: none;
                 touch-action: none;
                 cursor: crosshair;
+                margin: 0 auto;
+                background: #020617;
+                box-shadow: 0 4px 20px rgba(0,0,0,0.5);
             }}
 
-            /* Jitsi Video Container */
+            /* Jitsi Video Container - Responsive docking */
             #jitsi-container {{
                 width: 100% !important;
                 height: 520px !important;
-                min-height: 260px !important;
+                min-height: 76px !important;
                 flex: 1 1 auto !important;
                 background: #111827;
                 transition: height 0.25s ease;
@@ -1890,7 +1917,7 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             }}
             #classroom-master-wrapper.is-fullscreen #jitsi-container {{
                 height: calc(100vh - 60px) !important;
-                min-height: calc(100vh - 60px) !important;
+                min-height: 76px !important;
             }}
             #jitsi-container iframe {{
                 width: 100% !important;
@@ -1923,7 +1950,9 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             let loadedBookImage = null;
             let lastPos = {{ x: 0, y: 0 }};
             let snapDebounceTimer = null;
-            let currentLayout = 'split';
+            let currentLayout = 'board';
+            let currentZoom = 1.0;
+            let showingVideoTiles = false;
 
             // MediaRecorder state
             let mediaRecorder = null;
@@ -1964,7 +1993,7 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             function toggleFullScreen() {{
                 const master = document.getElementById('classroom-master-wrapper');
                 const topFsBtn = document.getElementById('fs-toggle-btn');
-                const jitsiCont = document.getElementById('jitsi-container');
+                const wbBox = document.getElementById('wb-canvas-box');
 
                 isFullscreenMode = !isFullscreenMode;
 
@@ -1991,6 +2020,7 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                             window.frameElement.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
                         }} catch (err) {{}}
                     }}
+                    if (wbBox) wbBox.style.height = "calc(100vh - 140px)";
                 }} else {{
                     try {{
                         if (document.fullscreenElement || document.webkitFullscreenElement) {{
@@ -2012,6 +2042,7 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                     if (window.frameElement) {{
                         window.frameElement.style.height = "{component_height}px";
                     }}
+                    if (wbBox) wbBox.style.height = (currentLayout === 'board') ? "540px" : "320px";
                 }}
             }}
 
@@ -2040,37 +2071,94 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 }}
             }}
 
-            // Whiteboard Layout Switcher (Split / Board Only / Video Only)
+            // Zoom & Pan System for Crisp Full-Width Book Pages
+            function zoomCanvas(delta) {{
+                currentZoom = Math.min(3.5, Math.max(0.5, currentZoom + delta));
+                applyCanvasZoom();
+                showClassroomNotice("🔍 Zoom: " + Math.round(currentZoom * 100) + "%", false);
+            }}
+
+            function resetCanvasZoom() {{
+                currentZoom = 1.0;
+                applyCanvasZoom();
+                showClassroomNotice("🔄 Zoom Reset (Fit Width)", false);
+            }}
+
+            function applyCanvasZoom() {{
+                if (!canvas) return;
+                canvas.style.width = (currentZoom * 100) + '%';
+                canvas.style.height = 'auto';
+            }}
+
+            // Toggle Participant Video Tiles (Shows / Hides SS avatar circle)
+            function toggleStudentTiles() {{
+                const jitsiCont = document.getElementById('jitsi-container');
+                const btn = document.getElementById('toggle-video-tiles-btn');
+                if (!jitsiCont) return;
+                showingVideoTiles = !showingVideoTiles;
+                if (showingVideoTiles) {{
+                    jitsiCont.style.setProperty('height', '260px', 'important');
+                    jitsiCont.style.setProperty('min-height', '260px', 'important');
+                    jitsiCont.style.setProperty('max-height', 'none', 'important');
+                    jitsiCont.style.setProperty('flex', '0 0 260px', 'important');
+                    jitsiCont.style.setProperty('overflow', 'visible', 'important');
+                    if (btn) btn.innerText = "👥 Hide Video Tiles";
+                }} else {{
+                    jitsiCont.style.setProperty('height', '76px', 'important');
+                    jitsiCont.style.setProperty('min-height', '76px', 'important');
+                    jitsiCont.style.setProperty('max-height', '76px', 'important');
+                    jitsiCont.style.setProperty('flex', '0 0 76px', 'important');
+                    jitsiCont.style.setProperty('overflow', 'hidden', 'important');
+                    if (btn) btn.innerText = "👥 Show Video Tiles";
+                }}
+            }}
+
+            // Whiteboard Layout Switcher (Board Focus 76px / Split / Video Focus)
             function setLayoutMode(mode, btn) {{
                 currentLayout = mode;
                 const wbBox = document.getElementById('wb-canvas-box');
                 const jitsiCont = document.getElementById('jitsi-container');
                 const panel = document.getElementById('whiteboard-panel');
+                const tilesBtn = document.getElementById('toggle-video-tiles-btn');
 
                 document.querySelectorAll('.wb-layout-group .wb-tool-btn').forEach(b => b.classList.remove('active'));
                 if (btn) btn.classList.add('active');
 
-                if (mode === 'split') {{
+                if (mode === 'board') {{
                     if (panel) panel.style.display = 'flex';
-                    if (wbBox) wbBox.style.height = '280px';
+                    if (wbBox) wbBox.style.height = isFullscreenMode ? 'calc(100vh - 140px)' : '540px';
                     if (jitsiCont) {{
-                        jitsiCont.style.setProperty('height', '280px', 'important');
-                        jitsiCont.style.setProperty('min-height', '280px', 'important');
+                        jitsiCont.style.setProperty('height', '76px', 'important');
+                        jitsiCont.style.setProperty('min-height', '76px', 'important');
+                        jitsiCont.style.setProperty('max-height', '76px', 'important');
+                        jitsiCont.style.setProperty('flex', '0 0 76px', 'important');
+                        jitsiCont.style.setProperty('overflow', 'hidden', 'important');
                     }}
-                }} else if (mode === 'board') {{
+                    showingVideoTiles = false;
+                    if (tilesBtn) tilesBtn.innerText = "👥 Show Video Tiles";
+                }} else if (mode === 'split') {{
                     if (panel) panel.style.display = 'flex';
-                    if (wbBox) wbBox.style.height = '430px';
+                    if (wbBox) wbBox.style.height = '320px';
                     if (jitsiCont) {{
-                        jitsiCont.style.setProperty('height', '150px', 'important');
-                        jitsiCont.style.setProperty('min-height', '150px', 'important');
+                        jitsiCont.style.setProperty('height', '260px', 'important');
+                        jitsiCont.style.setProperty('min-height', '260px', 'important');
+                        jitsiCont.style.setProperty('max-height', 'none', 'important');
+                        jitsiCont.style.setProperty('flex', '0 0 260px', 'important');
+                        jitsiCont.style.setProperty('overflow', 'visible', 'important');
                     }}
+                    showingVideoTiles = true;
+                    if (tilesBtn) tilesBtn.innerText = "👥 Hide Video Tiles";
                 }} else if (mode === 'video') {{
                     if (wbBox) wbBox.style.height = '0px';
                     if (panel) panel.style.display = 'none';
                     if (jitsiCont) {{
                         jitsiCont.style.setProperty('height', '520px', 'important');
                         jitsiCont.style.setProperty('min-height', '520px', 'important');
+                        jitsiCont.style.setProperty('max-height', 'none', 'important');
+                        jitsiCont.style.setProperty('flex', '1 1 auto', 'important');
+                        jitsiCont.style.setProperty('overflow', 'visible', 'important');
                     }}
+                    showingVideoTiles = true;
                 }}
                 if (canvas && ctx) redrawCanvas();
             }}
@@ -2105,7 +2193,7 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
 
                 if (!isTeacherRole) {{
                     if (statusTag) {{
-                        statusTag.innerText = "🔴 LIVE DRAWING";
+                        statusTag.innerText = "🔴 LIVE";
                         statusTag.style.background = "#ef4444";
                     }}
                     if (studentStatus) {{
@@ -2113,21 +2201,48 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                         studentStatus.style.background = "#ef4444";
                     }}
 
-                    // Auto-open whiteboard if teacher starts drawing or loads a book page
-                    if ((msg.t === 'm' || msg.t === 'snap' || (msg.t === 'toggle' && msg.open)) && panel) {{
+                    // Auto-open whiteboard in full board mode if teacher starts drawing or loads a book
+                    if ((msg.t === 'm' || msg.t === 'snap' || msg.t === 'book_img' || (msg.t === 'toggle' && msg.open)) && panel) {{
                         if (panel.style.display === 'none') {{
                             panel.style.display = 'flex';
-                            setLayoutMode('split', null);
+                            setLayoutMode('board', null);
                             initCanvas();
                         }}
                     }}
                 }}
 
-                if (msg.t === 'toggle') {{
+                if (msg.t === 'book_img') {{
+                    if (msg.img) {{
+                        const img = new Image();
+                        img.onload = function() {{
+                            loadedBookImage = img;
+                            canvas = document.getElementById('teaching-canvas');
+                            if (!canvas) initCanvas();
+                            if (canvas) {{
+                                canvas.width = msg.w || 1080;
+                                canvas.height = msg.h || Math.round(1080 * (img.height / img.width));
+                                currentZoom = 1.0;
+                                canvas.style.width = '100%';
+                                canvas.style.height = 'auto';
+                                ctx = canvas.getContext('2d');
+                                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                            }}
+                            if (panel && panel.style.display === 'none') {{
+                                panel.style.display = 'flex';
+                            }}
+                            setLayoutMode('board', null);
+                            if (studentStatus) {{
+                                studentStatus.innerText = "● Book Page Synced";
+                                studentStatus.style.background = "#059669";
+                            }}
+                        }};
+                        img.src = msg.img;
+                    }}
+                }} else if (msg.t === 'toggle') {{
                     if (!isTeacherRole && panel) {{
                         if (msg.open) {{
                             panel.style.display = 'flex';
-                            setLayoutMode('split', null);
+                            setLayoutMode('board', null);
                             initCanvas();
                         }} else {{
                             panel.style.display = 'none';
@@ -2157,8 +2272,15 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                     if (msg.img) {{
                         const img = new Image();
                         img.onload = function() {{
-                            if (!ctx) initCanvas();
+                            canvas = document.getElementById('teaching-canvas');
+                            if (!ctx || !canvas) initCanvas();
                             if (ctx && canvas) {{
+                                if (msg.w && msg.h) {{
+                                    canvas.width = msg.w;
+                                    canvas.height = msg.h;
+                                    canvas.style.width = (currentZoom * 100) + '%';
+                                    canvas.style.height = 'auto';
+                                }}
                                 ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                             }}
                             if (studentStatus) {{
@@ -2171,8 +2293,13 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 }} else if (msg.t === 'req_sync') {{
                     if (isTeacherRole && canvas) {{
                         try {{
-                            const snap = canvas.toDataURL('image/jpeg', 0.5);
-                            broadcastWbMessage({{ t: 'snap', img: snap }});
+                            const snap = canvas.toDataURL('image/jpeg', 0.82);
+                            broadcastWbMessage({{
+                                t: 'snap',
+                                img: snap,
+                                w: canvas.width,
+                                h: canvas.height
+                            }});
                         }} catch(e) {{}}
                     }}
                 }}
@@ -2181,9 +2308,14 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             function forceSyncCanvasToAll() {{
                 if (!canvas) return;
                 try {{
-                    const snap = canvas.toDataURL('image/jpeg', 0.55);
-                    broadcastWbMessage({{ t: 'snap', img: snap }});
-                    showClassroomNotice("📤 Whiteboard synced to all students' screens!", false);
+                    const snap = canvas.toDataURL('image/jpeg', 0.82);
+                    broadcastWbMessage({{
+                        t: 'snap',
+                        img: snap,
+                        w: canvas.width,
+                        h: canvas.height
+                    }});
+                    showClassroomNotice("📤 High-resolution board synced to all students!", false);
                 }} catch (e) {{
                     console.error("Sync error:", e);
                 }}
@@ -2199,8 +2331,13 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 canvas = document.getElementById('teaching-canvas');
                 if (!canvas) return;
                 ctx = canvas.getContext('2d');
-                if (canvas.width !== 1280) canvas.width = 1280;
-                if (canvas.height !== 720) canvas.height = 720;
+                
+                if (!loadedBookImage) {{
+                    if (canvas.width !== 1080) canvas.width = 1080;
+                    if (canvas.height !== 720) canvas.height = 720;
+                    canvas.style.width = (currentZoom * 100) + '%';
+                    canvas.style.height = 'auto';
+                }}
                 
                 redrawCanvas();
 
@@ -2289,8 +2426,13 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                     snapDebounceTimer = setTimeout(() => {{
                         if (canvas) {{
                             try {{
-                                const snap = canvas.toDataURL('image/jpeg', 0.5);
-                                broadcastWbMessage({{ t: 'snap', img: snap }});
+                                const snap = canvas.toDataURL('image/jpeg', 0.82);
+                                broadcastWbMessage({{
+                                    t: 'snap',
+                                    img: snap,
+                                    w: canvas.width,
+                                    h: canvas.height
+                                }});
                             }} catch(e) {{}}
                         }}
                     }}, 350);
@@ -2331,24 +2473,19 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             }}
 
             function redrawCanvas() {{
-                if (!ctx) return;
+                if (!ctx || !canvas) return;
                 if (loadedBookImage) {{
                     ctx.fillStyle = '#020617';
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
-                    const scale = Math.min(canvas.width / loadedBookImage.width, canvas.height / loadedBookImage.height);
-                    const nw = loadedBookImage.width * scale;
-                    const nh = loadedBookImage.height * scale;
-                    const nx = (canvas.width - nw) / 2;
-                    const ny = (canvas.height - nh) / 2;
-                    ctx.drawImage(loadedBookImage, nx, ny, nw, nh);
+                    ctx.drawImage(loadedBookImage, 0, 0, canvas.width, canvas.height);
                 }} else {{
                     ctx.fillStyle = '#020617';
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
                     ctx.fillStyle = '#1e293b';
                     ctx.fillRect(0, 0, canvas.width, 42);
                     ctx.fillStyle = '#38bdf8';
-                    ctx.font = 'bold 20px sans-serif';
-                    ctx.fillText("✨ Sisters Academy Live Whiteboard & Book Presenter", 24, 28);
+                    ctx.font = 'bold 22px sans-serif';
+                    ctx.fillText("✨ Sisters Academy Live Whiteboard & Lesson Presenter", 24, 28);
                 }}
             }}
 
@@ -2374,19 +2511,45 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                     const img = new Image();
                     img.onload = function() {{
                         loadedBookImage = img;
+                        
+                        const naturalW = img.naturalWidth || img.width || 1080;
+                        const naturalH = img.naturalHeight || img.height || 1920;
+                        
+                        canvas = document.getElementById('teaching-canvas');
+                        if (canvas) {{
+                            canvas.width = 1080;
+                            canvas.height = Math.round(1080 * (naturalH / naturalW));
+                            currentZoom = 1.0;
+                            canvas.style.width = '100%';
+                            canvas.style.height = 'auto';
+                        }}
+                        
                         const panel = document.getElementById('whiteboard-panel');
                         if (panel && panel.style.display === 'none') {{
                             panel.style.display = 'flex';
-                            setLayoutMode('split', null);
                         }}
+                        
+                        // Automatically switch to Board Focus (shrinks Jitsi to 76px audio bar)
+                        setLayoutMode('board', null);
                         initCanvas();
                         redrawCanvas();
+
                         if (isTeacherRole) {{
                             setTimeout(() => {{
-                                forceSyncCanvasToAll();
+                                try {{
+                                    const snap = canvas.toDataURL('image/jpeg', 0.82);
+                                    broadcastWbMessage({{
+                                        t: 'book_img',
+                                        img: snap,
+                                        w: canvas.width,
+                                        h: canvas.height
+                                    }});
+                                }} catch(err) {{
+                                    console.error("Book broadcast error:", err);
+                                }}
                             }}, 150);
                         }}
-                        showClassroomNotice("📖 Book page loaded! Synced to all students.", false);
+                        showClassroomNotice("📖 Book page loaded in full width! Synced to all students.", false);
                     }};
                     img.src = e.target.result;
                 }};
@@ -2399,7 +2562,8 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 const isHidden = panel.style.display === 'none';
                 if (isHidden) {{
                     panel.style.display = 'flex';
-                    setLayoutMode('split', null);
+                    // Auto-focus Board Mode (audio bar only, hiding big avatars)
+                    setLayoutMode('board', null);
                     initCanvas();
                     if (isTeacherRole) {{
                         broadcastWbMessage({{ t: 'toggle', open: true }});
@@ -3245,13 +3409,15 @@ def render_class_scheduler_widget(is_admin: bool = False):
                             if st.form_submit_button("✅ Done", use_container_width=True):
                                 try:
                                     with get_db_connection() as conn_w:
-                                        conn_w.execute("UPDATE scheduled_classes SET status = 'Completed' WHERE id = ?", (sc['id'],))
+                                        conn_w.execute("DELETE FROM scheduled_classes WHERE id = ?", (sc['id'],))
                                         conn_w.commit()
+                                        conn_w.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                                    trigger_cloud_sync(f"Marked scheduled class #{sc['id']} completed and removed")
 
                                     if is_supabase_active():
-                                        supabase_request("PATCH", "scheduled_classes", {"status": "Completed"}, params=f"id=eq.{sc['id']}")
+                                        supabase_request("DELETE", "scheduled_classes", params=f"id=eq.{sc['id']}")
 
-                                    st.success("Marked as Completed.")
+                                    st.success("Marked as Completed & Removed.")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Error completing class: {e}")
@@ -3263,12 +3429,13 @@ def render_class_scheduler_widget(is_admin: bool = False):
                                     with get_db_connection() as conn_w:
                                         conn_w.execute("DELETE FROM scheduled_classes WHERE id = ?", (sc['id'],))
                                         conn_w.commit()
-                                        trigger_cloud_sync(f"Cancelled scheduled class #{sc['id']}")
+                                        conn_w.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                                    trigger_cloud_sync(f"Permanently cancelled scheduled class #{sc['id']}")
 
                                     if is_supabase_active():
                                         supabase_request("DELETE", "scheduled_classes", params=f"id=eq.{sc['id']}")
 
-                                    st.warning("Scheduled class removed.")
+                                    st.warning("Scheduled class cancelled & permanently removed.")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Error deleting class: {e}")
@@ -3441,8 +3608,17 @@ def render_live_board_manager(is_teacher: bool = False):
             )
             if board_img_file is not None:
                 try:
+                    raw_bytes = board_img_file.getbuffer()
                     with open(LIVE_BOARD_IMAGE_PATH, "wb") as f_board:
-                        f_board.write(board_img_file.getbuffer())
+                        f_board.write(raw_bytes)
+                    b64_str = base64.b64encode(raw_bytes).decode("utf-8")
+                    mime = getattr(board_img_file, "type", "image/jpeg")
+                    now_ts = datetime.datetime.now().isoformat()
+                    with get_db_connection() as conn_b:
+                        conn_b.execute("INSERT OR REPLACE INTO live_board (id, image_data, mime_type, updated_at) VALUES (1, ?, ?, ?)", (b64_str, mime, now_ts))
+                        conn_b.commit()
+                        conn_b.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                    trigger_cloud_sync("Saved shared book page to cloud")
                     st.success("✅ Book page shared to all students' screens live!")
                 except Exception as e:
                     st.error(f"Error saving book page: {e}")
@@ -3456,12 +3632,27 @@ def render_live_board_manager(is_teacher: bool = False):
                         try:
                             if os.path.exists(LIVE_BOARD_IMAGE_PATH):
                                 os.remove(LIVE_BOARD_IMAGE_PATH)
+                            with get_db_connection() as conn_b:
+                                conn_b.execute("DELETE FROM live_board WHERE id = 1")
+                                conn_b.commit()
+                                conn_b.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                            trigger_cloud_sync("Cleared shared book page")
                             st.success("Page cleared.")
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error removing: {e}")
     else:
-        # Student Live Screen View
+        # Student Live Screen View - auto restore from DB if disk reset
+        if not os.path.exists(LIVE_BOARD_IMAGE_PATH):
+            try:
+                with get_db_connection() as conn_b:
+                    row_b = conn_b.execute("SELECT image_data FROM live_board WHERE id = 1").fetchone()
+                    if row_b and row_b['image_data']:
+                        with open(LIVE_BOARD_IMAGE_PATH, "wb") as f_out:
+                            f_out.write(base64.b64decode(row_b['image_data']))
+            except Exception:
+                pass
+
         if os.path.exists(LIVE_BOARD_IMAGE_PATH):
             st.markdown("""
             <div style="background: #f8fafc; border: 2px solid #6366f1; border-radius: 12px; padding: 10px 14px; margin-bottom: 8px; text-align: center;">
