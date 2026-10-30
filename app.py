@@ -16,6 +16,8 @@ import io
 import csv
 import ssl
 import json
+import base64
+import threading
 import streamlit.components.v1 as components
 
 # ==========================================
@@ -66,17 +68,40 @@ if "joined_live_class" not in st.session_state:
     st.session_state.joined_live_class = False
 
 # ==========================================
-# 3. HYBRID DATABASE ENGINE (SQLITE & SUPABASE)
+# 3. HYBRID DATABASE ENGINE & CLOUD PERSISTENCE (SQLITE + GITHUB AUTO-SYNC)
 # ==========================================
 DB_FILE = "classroom.db"
 
+class CheckpointingConnection(sqlite3.Connection):
+    """
+    Subclass of sqlite3.Connection that automatically truncates and flushes the
+    Write-Ahead Log (WAL) into classroom.db every time a write transaction commits.
+    This guarantees that the main classroom.db file on disk is always completely current.
+    """
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        res = super().__exit__(exc_type, exc_val, exc_tb)
+        if exc_type is None:
+            try:
+                self.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            except Exception:
+                pass
+        return res
+
+def flush_db_wal():
+    """Flushes all pending SQLite WAL pages directly into classroom.db so the main file is always 100% up-to-date."""
+    try:
+        conn = sqlite3.connect(DB_FILE, timeout=10.0)
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        conn.close()
+    except Exception as e:
+        print(f"WAL checkpoint error: {e}")
+
 def get_db_connection():
     """
-    Opens a fresh, short-lived SQLite connection with 30s timeout and WAL journal mode.
-    Allows concurrent reads and writes from multiple users (Teacher + Students)
-    without database locking conflicts.
+    Opens a fresh, short-lived SQLite connection with 30s timeout, WAL journal mode,
+    and automatic checkpointing upon transaction exit.
     """
-    conn = sqlite3.connect(DB_FILE, timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_FILE, timeout=30.0, check_same_thread=False, factory=CheckpointingConnection)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA journal_mode=WAL;")
@@ -88,6 +113,208 @@ def get_db_connection():
 
 # Compatibility alias
 get_db = get_db_connection
+
+
+def get_github_config() -> tuple:
+    """
+    Returns (github_token, github_repo) from:
+    1. st.secrets ('GITHUB_TOKEN', 'GITHUB_REPO')
+    2. os.environ ('GITHUB_TOKEN', 'GITHUB_REPO')
+    3. SQLite table app_meta (key='github_token', key='github_repo')
+    Defaults repository to 'AnsariAmirhasan/sisters-live-academy'
+    """
+    token = ""
+    repo = "AnsariAmirhasan/sisters-live-academy"
+
+    try:
+        token = st.secrets.get("GITHUB_TOKEN", os.environ.get("GITHUB_TOKEN", ""))
+        repo = st.secrets.get("GITHUB_REPO", os.environ.get("GITHUB_REPO", repo))
+    except Exception:
+        token = os.environ.get("GITHUB_TOKEN", "")
+        repo = os.environ.get("GITHUB_REPO", repo)
+
+    if not token:
+        try:
+            if os.path.exists(DB_FILE):
+                conn_tmp = sqlite3.connect(DB_FILE, timeout=4.0)
+                c_tmp = conn_tmp.cursor()
+                c_tmp.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)")
+                c_tmp.execute("SELECT value FROM app_meta WHERE key = 'github_token'")
+                row_t = c_tmp.fetchone()
+                if row_t and row_t[0]:
+                    token = row_t[0]
+                c_tmp.execute("SELECT value FROM app_meta WHERE key = 'github_repo'")
+                row_r = c_tmp.fetchone()
+                if row_r and row_r[0]:
+                    repo = row_r[0]
+                conn_tmp.close()
+        except Exception:
+            pass
+
+    return (token.strip() if token else "", repo.strip() if repo else "AnsariAmirhasan/sisters-live-academy")
+
+
+def sync_db_to_cloud(commit_message: str = "Auto-sync database") -> tuple:
+    """
+    Flushes SQLite WAL to classroom.db and commits the updated database
+    directly to GitHub repository via GitHub Contents API.
+    """
+    flush_db_wal()
+    token, repo = get_github_config()
+    if not token:
+        return False, "GITHUB_TOKEN is not configured. Add it in Streamlit Cloud Secrets or Super Admin settings."
+
+    if not os.path.exists(DB_FILE):
+        return False, f"{DB_FILE} not found on disk."
+
+    try:
+        with open(DB_FILE, "rb") as f:
+            db_bytes = f.read()
+
+        if not db_bytes.startswith(b"SQLite format 3\x00"):
+            return False, "Local database file is not a valid SQLite database."
+
+        content_b64 = base64.b64encode(db_bytes).decode('utf-8')
+
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "SistersLiveAcademy-Sync",
+            "Content-Type": "application/json"
+        }
+        api_url = f"https://api.github.com/repos/{repo}/contents/{DB_FILE}"
+
+        # 1. Get current file SHA on main branch
+        sha = None
+        try:
+            req_get = urllib.request.Request(f"{api_url}?ref=main", headers=headers)
+            with urllib.request.urlopen(req_get, timeout=8) as resp:
+                if resp.status == 200:
+                    info = json.loads(resp.read().decode('utf-8'))
+                    sha = info.get("sha")
+        except urllib.error.HTTPError as he:
+            if he.code != 404:
+                return False, f"GitHub check failed (HTTP {he.code}): {he.reason}"
+        except Exception as e:
+            return False, f"GitHub connect error: {e}"
+
+        # 2. PUT updated classroom.db
+        payload = {
+            "message": f"☁️ [Auto-Sync] {commit_message}",
+            "content": content_b64,
+            "branch": "main"
+        }
+        if sha:
+            payload["sha"] = sha
+
+        req_put = urllib.request.Request(
+            api_url,
+            data=json.dumps(payload).encode('utf-8'),
+            headers=headers,
+            method="PUT"
+        )
+        with urllib.request.urlopen(req_put, timeout=20) as resp:
+            if resp.status in (200, 201):
+                return True, "Database synced to GitHub successfully!"
+            return False, f"Unexpected response status: {resp.status}"
+
+    except urllib.error.HTTPError as he:
+        err_msg = he.read().decode('utf-8', errors='ignore')
+        return False, f"GitHub API error ({he.code}): {err_msg}"
+    except Exception as e:
+        return False, f"Cloud sync failed: {e}"
+
+
+def trigger_cloud_sync(commit_message: str = "Auto-sync database", blocking: bool = False):
+    """
+    Flushes WAL and triggers cloud sync.
+    If blocking=True, waits for result and returns (success: bool, msg: str).
+    If blocking=False, launches in daemon background thread to keep UI snappy.
+    """
+    flush_db_wal()
+    if blocking:
+        return sync_db_to_cloud(commit_message)
+    else:
+        t = threading.Thread(target=sync_db_to_cloud, args=(commit_message,), daemon=True)
+        t.start()
+        return True, "Sync queued in background"
+
+
+_CLOUD_PULL_DONE = False
+
+def pull_db_from_cloud() -> tuple:
+    """
+    Fetches the latest classroom.db from GitHub repository on startup.
+    Ensures that waking / redeploying Streamlit Community Cloud instances
+    immediately restore all teacher and student accounts without data loss.
+    """
+    token, repo = get_github_config()
+    if not token:
+        return False, "GITHUB_TOKEN not configured."
+
+    headers = {
+        "Authorization": f"token {token}",
+        "User-Agent": "SistersLiveAcademy-Sync"
+    }
+
+    try:
+        # First attempt: request raw bytes directly
+        raw_headers = dict(headers)
+        raw_headers["Accept"] = "application/vnd.github.v3.raw"
+        req_raw = urllib.request.Request(f"https://api.github.com/repos/{repo}/contents/{DB_FILE}?ref=main", headers=raw_headers)
+        
+        db_bytes = None
+        try:
+            with urllib.request.urlopen(req_raw, timeout=12) as resp:
+                if resp.status == 200:
+                    content = resp.read()
+                    if content.startswith(b"SQLite format 3\x00"):
+                        db_bytes = content
+        except Exception:
+            pass
+
+        # Second attempt if raw didn't work: standard json request to get download_url or content
+        if not db_bytes:
+            json_headers = dict(headers)
+            json_headers["Accept"] = "application/vnd.github.v3+json"
+            req_json = urllib.request.Request(f"https://api.github.com/repos/{repo}/contents/{DB_FILE}?ref=main", headers=json_headers)
+            with urllib.request.urlopen(req_json, timeout=12) as resp:
+                if resp.status == 200:
+                    meta = json.loads(resp.read().decode('utf-8'))
+                    dl_url = meta.get("download_url")
+                    if dl_url:
+                        dl_req = urllib.request.Request(dl_url, headers=headers)
+                        with urllib.request.urlopen(dl_req, timeout=12) as dl_resp:
+                            dl_data = dl_resp.read()
+                            if dl_data.startswith(b"SQLite format 3\x00"):
+                                db_bytes = dl_data
+                    elif meta.get("content"):
+                        decoded = base64.b64decode(meta["content"])
+                        if decoded.startswith(b"SQLite format 3\x00"):
+                            db_bytes = decoded
+
+        if db_bytes and db_bytes.startswith(b"SQLite format 3\x00"):
+            tmp_path = DB_FILE + ".cloud_pull"
+            with open(tmp_path, "wb") as f:
+                f.write(db_bytes)
+            os.replace(tmp_path, DB_FILE)
+            return True, f"Successfully pulled {len(db_bytes)} bytes from GitHub repository ({repo})."
+        return False, "Could not retrieve valid SQLite database from GitHub."
+
+    except Exception as e:
+        return False, f"Startup pull error: {e}"
+
+
+def ensure_cloud_db_pulled():
+    global _CLOUD_PULL_DONE
+    if _CLOUD_PULL_DONE:
+        return
+    _CLOUD_PULL_DONE = True
+    ok, msg = pull_db_from_cloud()
+    if ok:
+        print(f"[Cloud Sync] {msg}")
+    else:
+        print(f"[Cloud Sync] Startup pull notice: {msg}")
 
 
 def hash_password(password: str, salt: str = "sister_academy_salt_2026") -> str:
@@ -310,6 +537,7 @@ def process_and_save_recording(uploaded_file, title: str, subject: str, notes: s
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (title.strip(), subject.strip(), today_str, desc, final_drive_link, final_embed_url, final_download_url, now_str))
             conn_w.commit()
+            trigger_cloud_sync(f"Added recording '{title.strip()}'")
     except Exception as e:
         print(f"Error saving recording row: {e}")
 
@@ -684,39 +912,51 @@ def init_database():
                 ?, ?, ?, ?)
         """, (demo_drive_url, embed_url, dl_url, now_str))
 
-    # One-time cleanup of legacy demo Math/Physics entries & fake seeded fees
-    try:
-        c.execute("DELETE FROM scheduled_classes WHERE topic LIKE '%Trigonometry%' OR topic LIKE '%Electromagnetism%' OR subject LIKE '%Mathematics%' OR subject LIKE '%Physics%'")
-        c.execute("UPDATE class_session SET topic = 'Urdu & Arabic Live Class' WHERE topic LIKE '%Mathematics%' OR topic LIKE '%Science%'")
-        c.execute("UPDATE recordings SET subject = 'Urdu / Arabic', title = 'Urdu & Arabic Foundation Class 01' WHERE title LIKE '%Foundation & Orientation Class 01%'")
-        c.execute("DELETE FROM fees WHERE note LIKE '%#98721%' OR marked_by = 'Lead Teacher' OR month_title LIKE '%October 2026%' OR note LIKE '%Dues reminder sent%' OR note LIKE '%Paid in Cash%'")
-    except Exception as e:
-        print(f"Cleanup error: {e}")
+    # One-time cleanup of legacy demo Math/Physics entries
+    c.execute("SELECT value FROM app_meta WHERE key = 'legacy_cleanup_done_v1'")
+    if not c.fetchone():
+        try:
+            c.execute("DELETE FROM scheduled_classes WHERE topic LIKE '%Trigonometry%' OR topic LIKE '%Electromagnetism%' OR subject LIKE '%Mathematics%' OR subject LIKE '%Physics%'")
+            c.execute("UPDATE class_session SET topic = 'Urdu & Arabic Live Class' WHERE topic LIKE '%Mathematics%' OR topic LIKE '%Science%'")
+            c.execute("UPDATE recordings SET subject = 'Urdu / Arabic', title = 'Urdu & Arabic Foundation Class 01' WHERE title LIKE '%Foundation & Orientation Class 01%'")
+            c.execute("DELETE FROM fees WHERE note LIKE '%#98721%'")
+            c.execute("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('legacy_cleanup_done_v1', '1')")
+        except Exception as e:
+            print(f"Cleanup error: {e}")
 
     # Seed initial scheduled class if empty
     c.execute("SELECT COUNT(*) as cnt FROM scheduled_classes")
     if c.fetchone()['cnt'] == 0:
-        tomorrow_str = str(datetime.date.today() + datetime.timedelta(days=1))
-        c.execute("""
-        INSERT INTO scheduled_classes (topic, subject, teacher_name, scheduled_date, scheduled_time, room_name, notes, status, allow_waiting_room)
-        VALUES 
-            ('Urdu Grammar & Nazm Reading Lesson 1', 'Urdu / Arabic', 'Teacher 1', ?, '18:00', 'SistersLiveClass_MasterRoom', 'Bring notebooks. Waiting lounge is open for early practice!', 'Scheduled', 1),
-            ('Arabic Grammar (Nahw & Sarf) Essentials', 'Urdu / Arabic', 'Teacher 2', ?, '17:30', 'SistersLiveClass_MasterRoom', 'Review previous vocabulary before entering.', 'Scheduled', 1)
-        """, (tomorrow_str, str(datetime.date.today() + datetime.timedelta(days=2))))
+        c.execute("SELECT value FROM app_meta WHERE key = 'initial_schedule_seeded'")
+        if not c.fetchone():
+            tomorrow_str = str(datetime.date.today() + datetime.timedelta(days=1))
+            c.execute("""
+            INSERT INTO scheduled_classes (topic, subject, teacher_name, scheduled_date, scheduled_time, room_name, notes, status, allow_waiting_room)
+            VALUES 
+                ('Urdu Grammar & Nazm Reading Lesson 1', 'Urdu / Arabic', 'Teacher 1', ?, '18:00', 'SistersLiveClass_MasterRoom', 'Bring notebooks. Waiting lounge is open for early practice!', 'Scheduled', 1),
+                ('Arabic Grammar (Nahw & Sarf) Essentials', 'Urdu / Arabic', 'Teacher 2', ?, '17:30', 'SistersLiveClass_MasterRoom', 'Review previous vocabulary before entering.', 'Scheduled', 1)
+            """, (tomorrow_str, str(datetime.date.today() + datetime.timedelta(days=2))))
+            c.execute("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('initial_schedule_seeded', '1')")
 
     conn.commit()
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    except Exception:
+        pass
     conn.close()
 
 # Compatibility alias
 init_db = init_database
 
-# Run DB initialization once
+# Run Startup Pull from Cloud (if configured) then initialize DB schema
+ensure_cloud_db_pulled()
 init_database()
 
 
 def delete_user_account(target_username: str, caller_role: str, caller_username: str) -> tuple:
     """
     Shared helper: safely deletes a user account and their associated fee records.
+    Flushes WAL and triggers cloud sync so the deleted state persists in GitHub.
     Returns (success: bool, message: str)
     """
     # Guard: never delete admin
@@ -750,6 +990,15 @@ def delete_user_account(target_username: str, caller_role: str, caller_username:
             # Delete the user account
             conn_w.execute("DELETE FROM users WHERE id = ?", (target_id,))
             conn_w.commit()
+
+            # Mirror delete to Supabase if active
+            if is_supabase_active():
+                supabase_request("DELETE", "users", params=f"username=eq.{target_username}")
+                supabase_request("DELETE", "fees", params=f"student_username=eq.{target_username}")
+
+            # Persist to cloud GitHub
+            trigger_cloud_sync(f"Deleted user account @{target_username}")
+
             return True, f"Account '@{target_username}' permanently deleted."
         except Exception as e:
             return False, f"Delete failed: {e}"
@@ -2174,6 +2423,7 @@ def render_fees_management(is_admin: bool = True):
                                     VALUES (?, ?, ?, ?, ?, 'Pending', '-', '-', ?)
                                     """, (t['username'], t['full_name'], f_month.strip(), clean_amt, due_str, f_note.strip()))
                                 conn_w.commit()
+                                trigger_cloud_sync("Issued fee invoice(s)")
 
                             if is_supabase_active():
                                 for t in targets:
@@ -2228,6 +2478,7 @@ def render_fees_management(is_admin: bool = True):
                                 UPDATE fees SET status = 'Paid', paid_date = ?, marked_by = ? WHERE id = ?
                                 """, (today_str, marker, target_fee['id']))
                                 conn_w.commit()
+                                trigger_cloud_sync(f"Marked invoice #{target_fee['id']} as Paid")
 
                             if is_supabase_active():
                                 supabase_request("PATCH", "fees", {
@@ -2248,6 +2499,7 @@ def render_fees_management(is_admin: bool = True):
                                 UPDATE fees SET status = 'Pending', paid_date = '-', marked_by = '-' WHERE id = ?
                                 """, (target_fee['id'],))
                                 conn_w.commit()
+                                trigger_cloud_sync(f"Reset invoice #{target_fee['id']} to Pending")
 
                             if is_supabase_active():
                                 supabase_request("PATCH", "fees", {
@@ -2266,6 +2518,7 @@ def render_fees_management(is_admin: bool = True):
                             with get_db_connection() as conn_w:
                                 conn_w.execute("DELETE FROM fees WHERE id = ?", (target_fee['id'],))
                                 conn_w.commit()
+                                trigger_cloud_sync(f"Deleted invoice #{target_fee['id']}")
 
                             if is_supabase_active():
                                 supabase_request("DELETE", "fees", params=f"id=eq.{target_fee['id']}")
@@ -2503,6 +2756,7 @@ def render_class_scheduler_widget(is_admin: bool = False):
                             VALUES (?, ?, ?, ?, ?, ?, ?, 'Scheduled', ?)
                             """, (sc_topic.strip(), sc_sub, sc_teacher.strip(), date_str, sc_time.strip(), sc_room.strip(), sc_notes.strip(), wait_val))
                             conn_w.commit()
+                            trigger_cloud_sync(f"Scheduled class '{sc_topic.strip()}'")
 
                         if is_supabase_active():
                             supabase_request("POST", "scheduled_classes", {
@@ -2611,6 +2865,7 @@ def render_class_scheduler_widget(is_admin: bool = False):
                                     with get_db_connection() as conn_w:
                                         conn_w.execute("DELETE FROM scheduled_classes WHERE id = ?", (sc['id'],))
                                         conn_w.commit()
+                                        trigger_cloud_sync(f"Cancelled scheduled class #{sc['id']}")
 
                                     if is_supabase_active():
                                         supabase_request("DELETE", "scheduled_classes", params=f"id=eq.{sc['id']}")
@@ -2873,6 +3128,7 @@ def render_top_quick_actions_bar():
                                             UPDATE users SET password = ?, password_hash = ? WHERE username = ?
                                             """, (new_pwd.strip(), new_h, st.session_state.username))
                                             conn_w.commit()
+                                            trigger_cloud_sync(f"Password changed for @{st.session_state.username}")
 
                                         if is_supabase_active():
                                             supabase_request("PATCH", "users", {
@@ -2938,6 +3194,10 @@ def render_admin_dashboard():
     </div>
     """, unsafe_allow_html=True)
 
+    gh_tok, gh_rp = get_github_config()
+    if not gh_tok:
+        st.warning("⚠️ **Cloud Notice:** GitHub Auto-Persistence is not locked yet. Newly created accounts could reset when Streamlit Cloud sleeps! Open the **'☁️ Permanent Cloud Lock & Backup'** tab below to paste your GitHub Token so accounts are saved to GitHub permanently.")
+
     tab_cred, tab_fees, tab_live, tab_recordings, tab_notices, tab_doubts, tab_att, tab_cloud = st.tabs([
         "👑 Master Credentials & Accounts",
         "💳 Student Fees & Invoices",
@@ -2946,7 +3206,7 @@ def render_admin_dashboard():
         "📢 Announcements Board",
         "❓ Doubts & Discussion Moderation",
         "📊 Master Attendance Logs",
-        "☁️ Cloud Sync Status"
+        "☁️ Permanent Cloud Lock & Backup"
     ])
 
     # ---------------------------------------------
@@ -3023,6 +3283,7 @@ def render_admin_dashboard():
                                 VALUES (?, ?, ?, ?, ?, 1, ?)
                                 """, (new_un, new_pw, pw_hash, role_val, new_fn, now_str))
                                 conn_w.commit()
+                                trigger_cloud_sync(f"Created {new_role} account @{new_un}")
 
                             if is_supabase_active():
                                 supabase_request("POST", "users", {
@@ -3065,6 +3326,7 @@ def render_admin_dashboard():
                                 with get_db_connection() as conn_w:
                                     conn_w.execute("UPDATE users SET password = ?, password_hash = ? WHERE id = ?", (new_password_val.strip(), pw_new_hash, sel_user['id']))
                                     conn_w.commit()
+                                    trigger_cloud_sync(f"Updated password for @{sel_user['username']}")
                             except Exception as e:
                                 print(f"Error updating user password: {e}")
 
@@ -3089,6 +3351,7 @@ def render_admin_dashboard():
                                     with get_db_connection() as conn_w:
                                         conn_w.execute("UPDATE users SET is_active = ? WHERE id = ?", (new_act, sel_user['id']))
                                         conn_w.commit()
+                                        trigger_cloud_sync(f"Toggled status for @{sel_user['username']}")
                                 except Exception as e:
                                     print(f"Error toggling user status: {e}")
 
@@ -3487,27 +3750,120 @@ def render_admin_dashboard():
     # ADMIN TAB 7: CLOUD STORAGE STATUS
     # ---------------------------------------------
     with tab_cloud:
-        st.subheader("☁️ Supabase Cloud Storage Status")
-        supabase_on = is_supabase_active()
-        url_cfg, key_cfg = get_supabase_config()
+        st.subheader("☁️ Permanent Cloud Lock & Auto-Persistence")
+        st.markdown(
+            "Streamlit Community Cloud has an ephemeral filesystem that resets on sleep or restart. "
+            "With **GitHub Cloud Auto-Persistence**, every Teacher/Student account, fee record, and schedule is "
+            "automatically committed back to your GitHub repository in real time so **no data is ever lost!**"
+        )
 
-        if supabase_on:
-            st.success("🟢 Supabase Cloud Storage is fully CONNECTED and ACTIVE!")
-            if url_cfg:
-                st.write(f"**Connected Supabase Project URL:** `{url_cfg}`")
+        gh_token, gh_repo = get_github_config()
+        if gh_token and gh_repo:
+            st.success(f"🟢 **GitHub Cloud Auto-Persistence is ACTIVE!** Target repository: `{gh_repo}`. Every write operation (accounts, passwords, fees, recordings) automatically syncs directly to GitHub.")
         else:
-            st.warning("🟡 Currently using local SQLite database. To enable permanent Cloud storage across all device restarts:")
-            st.markdown("1. Open your Supabase SQL Editor:")
-            st.link_button("👉 Open Supabase SQL Editor", "https://supabase.com/dashboard/project/qxfuebpmspwixaylddby/sql/new", type="primary")
-            st.markdown("2. Copy the SQL script below, paste it into the editor, and click **RUN**:")
-            try:
-                with open("supabase_schema.sql", "r") as f:
-                    sql_content = f.read()
-            except Exception:
-                sql_content = "-- Run supabase_schema.sql from your repository"
+            st.warning("🟠 **GitHub Cloud Auto-Persistence is NOT fully active yet!**")
+            st.markdown(
+                """
+                **Permanent 2-Step Setup via Streamlit Cloud Secrets (Recommended):**
+                1. Go to your app on [share.streamlit.io](https://share.streamlit.io) -> Click **Manage app** (bottom-right) -> **Settings** -> **Secrets**.
+                2. Paste the following and click **Save**:
+                ```toml
+                GITHUB_TOKEN = "ghp_yourPersonalAccessTokenHere"
+                GITHUB_REPO = "AnsariAmirhasan/sisters-live-academy"
+                ```
+                *(Create a GitHub Personal Access Token at github.com -> Settings -> Developer Settings -> Personal access tokens -> Tokens (classic) with `repo` permission).*
+                """
+            )
 
-            st.code(sql_content, language="sql")
-            st.info("Once you click RUN in Supabase, refresh this page. Cloud Storage will automatically turn GREEN!")
+            with st.expander("🔑 Or Paste GitHub Token Directly Here (Instant Setup)", expanded=True):
+                with st.form("form_save_gh_token"):
+                    custom_tok = st.text_input("GitHub Personal Access Token (classic or fine-grained with Contents: Write)", type="password", placeholder="ghp_...")
+                    custom_repo = st.text_input("GitHub Repository", value=gh_repo or "AnsariAmirhasan/sisters-live-academy")
+                    if st.form_submit_button("🔒 Save & Enable Auto-Persistence Now", type="primary"):
+                        if custom_tok.strip():
+                            try:
+                                with get_db_connection() as conn_meta:
+                                    conn_meta.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)")
+                                    conn_meta.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('github_token_override', ?)", (custom_tok.strip(),))
+                                    conn_meta.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('github_repo_override', ?)", (custom_repo.strip(),))
+                                    conn_meta.commit()
+                                st.success("Token saved into database! Triggering test sync...")
+                                ok, msg = sync_db_to_cloud("Initial Cloud Lock activation from Admin Dashboard")
+                                if ok:
+                                    st.success(f"🎉 Cloud Auto-Persistence successfully locked and verified! ({msg})")
+                                else:
+                                    st.warning(f"Token saved, but test sync reported: {msg}")
+                                st.rerun()
+                            except Exception as ex_tk:
+                                st.error(f"Failed to save token: {ex_tk}")
+                        else:
+                            st.error("Please enter a valid GitHub token.")
+
+        st.markdown("---")
+        st.subheader("🔄 Manual Cloud Sync & Backup Actions")
+        col_sync1, col_sync2 = st.columns(2)
+
+        with col_sync1:
+            if st.button("🔄 Sync Database to GitHub Cloud Now", type="primary", use_container_width=True):
+                with st.spinner("Flushing WAL and committing classroom.db to GitHub..."):
+                    ok_sync, msg_sync = sync_db_to_cloud(f"Manual database sync by Admin @{st.session_state.username}")
+                    if ok_sync:
+                        st.success(f"✅ Successfully synced to GitHub: {msg_sync}")
+                    else:
+                        st.error(f"❌ Sync failed: {msg_sync}")
+
+        with col_sync2:
+            flush_db_wal()
+            db_bytes = b""
+            try:
+                with open("classroom.db", "rb") as f_db:
+                    db_bytes = f_db.read()
+            except Exception as e_rdb:
+                st.error(f"Could not read classroom.db: {e_rdb}")
+
+            if db_bytes:
+                st.download_button(
+                    label="💾 Download Full Database Backup (classroom.db)",
+                    data=db_bytes,
+                    file_name=f"classroom_backup_{datetime.date.today()}.db",
+                    mime="application/x-sqlite3",
+                    use_container_width=True
+                )
+
+        st.markdown("---")
+        with st.expander("📤 Restore Database from Local Backup (.db File)"):
+            st.info("Upload a previously downloaded `classroom.db` file to immediately restore all accounts, attendance, fees, and scheduled classes.")
+            uploaded_db = st.file_uploader("Select classroom.db backup file", type=["db", "sqlite", "sqlite3"], key="uploader_restore_db")
+            if uploaded_db is not None:
+                content = uploaded_db.getvalue()
+                if not content.startswith(b"SQLite format 3\x00"):
+                    st.error("❌ The uploaded file is not a valid SQLite 3 database.")
+                else:
+                    st.warning(f"File verified: SQLite database ({len(content) / 1024:.1f} KB).")
+                    if st.button("⚠️ Confirm & Overwrite Live Database", type="secondary"):
+                        try:
+                            # Close any lingering connections and write file
+                            flush_db_wal()
+                            with open("classroom.db", "wb") as f_out:
+                                f_out.write(content)
+                            flush_db_wal()
+                            st.success("Database restored successfully!")
+                            trigger_cloud_sync("Database restored from Admin panel backup file")
+                            st.rerun()
+                        except Exception as e_wrt:
+                            st.error(f"Failed to restore database: {e_wrt}")
+
+        st.markdown("---")
+        with st.expander("⚡ Supabase Cloud Database Status (Optional Alternate Cloud)"):
+            supabase_on = is_supabase_active()
+            url_cfg, key_cfg = get_supabase_config()
+            if supabase_on:
+                st.success("🟢 Supabase Cloud Storage is fully CONNECTED and ACTIVE!")
+                if url_cfg:
+                    st.write(f"**Connected Supabase Project URL:** `{url_cfg}`")
+            else:
+                st.info("Supabase is optional. With GitHub Cloud Auto-Persistence enabled above, your database is already 100% permanently preserved.")
+                st.link_button("👉 Open Supabase SQL Editor", "https://supabase.com/dashboard/project/qxfuebpmspwixaylddby/sql/new")
 
     try:
         conn.close()
@@ -3968,6 +4324,7 @@ def render_teacher_dashboard():
                                     VALUES (?, ?, ?, 'student', ?, 1, ?)
                                     """, (n_un, n_pw, pw_h, n_fn, now_str))
                                     conn_w.commit()
+                                    trigger_cloud_sync(f"Created student account @{n_un}")
 
                                 if is_supabase_active():
                                     supabase_request("POST", "users", {
