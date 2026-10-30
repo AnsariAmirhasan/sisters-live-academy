@@ -603,6 +603,7 @@ def render_recording_player(rec: dict, is_student: bool = False, key_suffix: str
             st.markdown(f"""
             <iframe src="{embed_url}" width="100%" height="340" frameborder="0" allow="autoplay; fullscreen" allowfullscreen style="border-radius:10px; border:1px solid #cbd5e1;"></iframe>
             """, unsafe_allow_html=True)
+            st.caption("ℹ️ *Google Drive note: The file must be shared as **'Anyone with the link can view'** in Google Drive to stream inside the player.*")
         if is_student:
             c1, c2 = st.columns(2)
             with c1:
@@ -1186,17 +1187,11 @@ def init_database():
                 'Important', ?)
         """, (now_str,))
 
-    # Seed initial recording if empty
-    c.execute("SELECT COUNT(*) as cnt FROM recordings")
-    if c.fetchone()['cnt'] == 0:
-        demo_drive_url = "https://drive.google.com/file/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs/view?usp=sharing"
-        embed_url, dl_url = process_google_drive_link(demo_drive_url)
-        c.execute("""
-        INSERT INTO recordings (title, subject, lecture_date, description, drive_link, embed_url, download_url, created_at)
-        VALUES ('Foundation & Orientation Class 01', 'Orientation', '2026-10-25', 
-                'Complete syllabus blueprint, exam strategy, and doubt-clearing structure.', 
-                ?, ?, ?, ?)
-        """, (demo_drive_url, embed_url, dl_url, now_str))
+    # Purge any dummy placeholder demo recordings with non-existent Google Drive link
+    try:
+        c.execute("DELETE FROM recordings WHERE drive_link LIKE '%1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs%' OR embed_url LIKE '%1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs%' OR title LIKE '%Orientation%'")
+    except Exception as e:
+        print(f"Error purging demo recording: {e}")
 
     # 8.6. Live Board Table (High Clarity Book & Whiteboard Sync)
     c.execute("""
@@ -5521,7 +5516,7 @@ def render_student_dashboard():
             recs = [dict(r) for r in c.fetchall()]
 
         if not recs:
-            st.info("No recorded classes found matching your search.")
+            st.info("📖 No recorded lectures published yet. When your teacher records an audio lecture or uploads study materials, they will appear here.")
         else:
             for r in recs:
                 st.markdown(f"""
