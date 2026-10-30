@@ -1108,14 +1108,14 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
 
     if is_teacher:
         tb_buttons = json.dumps([
-            'microphone', 'camera', 'desktop', 'whiteboard', 'chat', 'raisehand', 'tileview', 'fullscreen', 'hangup'
+            'microphone', 'camera', 'chat', 'raisehand', 'tileview', 'hangup'
         ])
         student_restrictions_js = ""
     else:
         # Strict student security: No hangup button (prevents 'End meeting for all' popup),
         # no security/mute-everyone/livestreaming/desktop
         tb_buttons = json.dumps([
-            'microphone', 'camera', 'chat', 'raisehand', 'tileview', 'fullscreen'
+            'microphone', 'camera', 'chat', 'raisehand', 'tileview'
         ])
         student_restrictions_js = """,
                             disableRemoteMute: true,
@@ -1134,20 +1134,21 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             <button id="share-screen-btn" class="topbar-btn share-btn" onclick="handleScreenShare()">📖 Share Book / Screen</button>
             <button id="rec-toggle-btn" class="topbar-btn rec-btn topbar-full-width" onclick="toggleRecording()">⏺️ Record Class (Video + Voice)</button>
         </div>
-        <div id="classroom-notice-toast" style="display:none; padding:8px 12px; margin:4px 8px; border-radius:6px; font-size:0.83rem; color:white; font-weight:600; text-align:center;"></div>
-        <div id="rec-status-bar" style="display:none; padding:6px 10px; background:#0f172a; border-bottom:1px solid #334155; justify-content:center; align-items:center; gap:8px;">
-            <span style="width:10px; height:10px; border-radius:50%; background:#ef4444; display:inline-block;"></span>
-            <span id="rec-timer" style="font-family:monospace; color:#38bdf8; font-weight:bold; font-size:0.92rem;">00:00:00</span>
-            <span style="color:#94a3b8; font-size:0.8rem; font-weight:500;">Recording Video + Audio Active (Click 'Stop' to save)</span>
+        <div id="classroom-notice-toast" style="display:none; padding:6px 10px; margin:4px 8px; border-radius:6px; font-size:0.8rem; color:white; font-weight:600; text-align:center;"></div>
+        <div id="rec-status-bar" style="display:none; padding:5px 8px; background:#0f172a; border-bottom:1px solid #334155; justify-content:center; align-items:center; gap:8px;">
+            <span style="width:9px; height:9px; border-radius:50%; background:#ef4444; display:inline-block;"></span>
+            <span id="rec-timer" style="font-family:monospace; color:#38bdf8; font-weight:bold; font-size:0.88rem;">00:00:00</span>
+            <span style="color:#94a3b8; font-size:0.78rem; font-weight:500;">Recording Video + Audio Active (Click 'Stop' to save)</span>
         </div>
         """
     else:
         topbar_html = """
         <div class="classroom-topbar" style="display:flex; justify-content:space-between; align-items:center;">
             <button id="fs-toggle-btn" class="topbar-btn fs-btn" onclick="toggleFullScreen()">⛶ Full Screen</button>
-            <span style="color:#94a3b8; font-size:0.85rem; font-weight:500;">🎥 Live Audio & Video Classroom Active</span>
+            <button id="raise-hand-btn" class="topbar-btn" style="background:#0284c7; color:white;" onclick="toggleRaiseHand()">✋ Raise Hand</button>
+            <span style="color:#94a3b8; font-size:0.82rem; font-weight:500;">🎥 Live Audio & Video Classroom</span>
         </div>
-        <div id="classroom-notice-toast" style="display:none; padding:8px 12px; margin:4px 8px; border-radius:6px; font-size:0.83rem; color:white; font-weight:600; text-align:center;"></div>
+        <div id="classroom-notice-toast" style="display:none; padding:6px 10px; margin:4px 8px; border-radius:6px; font-size:0.8rem; color:white; font-weight:600; text-align:center;"></div>
         """
 
     whiteboard_html = """
@@ -1185,7 +1186,7 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
     </div>
     """
 
-    component_height = 720 if is_teacher else 630
+    component_height = 660 if is_teacher else 585
 
     html_code = f"""
     <!DOCTYPE html>
@@ -1230,35 +1231,13 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 border: none !important;
                 overflow-y: auto !important;
             }}
-            #floating-fs-btn {{
-                display: none;
-                position: fixed;
-                top: 14px;
-                right: 14px;
-                z-index: 99999999;
-                background: #dc2626;
-                color: #ffffff;
-                font-size: 0.86rem;
-                font-weight: 700;
-                padding: 10px 18px;
-                border-radius: 999px;
-                border: 2px solid #ffffff;
-                box-shadow: 0 4px 20px rgba(0,0,0,0.65);
-                cursor: pointer;
-                align-items: center;
-                gap: 6px;
-                transition: transform 0.15s ease;
-            }}
-            #floating-fs-btn:active {{
-                transform: scale(0.95);
-            }}
             .classroom-topbar {{
                 background: #1e293b;
-                padding: 8px 10px;
+                padding: 6px 8px;
                 border-bottom: 1px solid #334155;
                 display: grid;
                 grid-template-columns: repeat(2, 1fr);
-                gap: 8px;
+                gap: 6px;
                 width: 100%;
                 box-sizing: border-box;
                 z-index: 20;
@@ -1272,7 +1251,7 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                     flex-direction: row;
                     justify-content: space-between;
                     align-items: center;
-                    gap: 8px;
+                    gap: 6px;
                     flex-wrap: wrap;
                 }}
                 .topbar-full-width {{
@@ -1281,20 +1260,20 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             }}
             .topbar-btn {{
                 border: none;
-                padding: 8px 12px;
-                border-radius: 8px;
-                font-size: 0.83rem;
+                padding: 7px 10px;
+                border-radius: 7px;
+                font-size: 13px;
                 font-weight: 600;
                 cursor: pointer;
                 transition: 0.15s ease;
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                gap: 6px;
+                gap: 5px;
                 white-space: nowrap;
                 text-align: center;
                 user-select: none;
-                min-height: 40px;
+                min-height: 36px;
                 box-sizing: border-box;
             }}
             .fs-btn {{
@@ -1303,6 +1282,11 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 border: 1px solid #475569;
             }}
             .fs-btn:hover {{ background: #475569; }}
+            .fs-btn.fs-active {{
+                background: #dc2626 !important;
+                color: #ffffff !important;
+                border: 1px solid #ef4444 !important;
+            }}
             .share-btn {{
                 background: #2563eb;
                 color: white;
@@ -1397,31 +1381,42 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 cursor: crosshair;
             }}
 
-            /* Jitsi Video Container */
+            /* Jitsi Video Container - Explicit 520px non-collapsing height */
             #jitsi-container {{
-                flex: 1;
-                width: 100%;
-                min-height: 520px;
-                height: 540px;
+                width: 100% !important;
+                height: 520px !important;
+                min-height: 520px !important;
+                flex: 0 0 520px !important;
+                flex-shrink: 0 !important;
                 background: #111827;
                 transition: height 0.3s ease;
+                display: block;
             }}
             @media (max-width: 768px) {{
                 #jitsi-container {{
-                    min-height: 480px;
-                    height: 500px;
+                    width: 100% !important;
+                    height: 520px !important;
+                    min-height: 520px !important;
+                    flex: 0 0 520px !important;
+                    flex-shrink: 0 !important;
                 }}
+            }}
+            #classroom-master-wrapper.is-fullscreen #jitsi-container {{
+                height: calc(100vh - 60px) !important;
+                min-height: calc(100vh - 60px) !important;
+                flex: 1 1 auto !important;
             }}
             #jitsi-container iframe {{
                 width: 100% !important;
                 height: 100% !important;
+                min-height: 100% !important;
                 border: none !important;
+                display: block !important;
             }}
         </style>
     </head>
     <body>
         <div id="classroom-master-wrapper">
-            <button id="floating-fs-btn" onclick="toggleFullScreen()">❌ Exit Full Screen (Chhota Karein)</button>
             {topbar_html}
             {whiteboard_html}
             <div id="jitsi-container"></div>
@@ -1465,10 +1460,20 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 }}
             }}
 
-            // Fullscreen Toggle with Prominent Floating Exit Button
+            function toggleRaiseHand() {{
+                if (api) {{
+                    try {{
+                        api.executeCommand('toggleRaiseHand');
+                        showClassroomNotice("✋ Hand Raised / Lowered", false);
+                    }} catch (e) {{
+                        console.log("toggleRaiseHand error:", e);
+                    }}
+                }}
+            }}
+
+            // Clean Fullscreen Toggle via Top-Left Toolbar Button
             function toggleFullScreen() {{
                 const master = document.getElementById('classroom-master-wrapper');
-                const floatBtn = document.getElementById('floating-fs-btn');
                 const topFsBtn = document.getElementById('fs-toggle-btn');
                 const jitsiCont = document.getElementById('jitsi-container');
 
@@ -1486,12 +1491,9 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                     }}
 
                     master.classList.add('is-fullscreen');
-                    if (floatBtn) {{
-                        floatBtn.style.display = 'inline-flex';
-                        floatBtn.innerHTML = '❌ Exit Full Screen (Chhota Karein)';
-                    }}
                     if (topFsBtn) {{
                         topFsBtn.innerHTML = '❌ Exit Full Screen';
+                        topFsBtn.classList.add('fs-active');
                     }}
                     if (window.frameElement) {{
                         window.frameElement.style.height = "100vh";
@@ -1501,7 +1503,9 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                         }} catch (err) {{}}
                     }}
                     if (jitsiCont) {{
-                        jitsiCont.style.height = "calc(100vh - 120px)";
+                        jitsiCont.style.setProperty('height', 'calc(100vh - 60px)', 'important');
+                        jitsiCont.style.setProperty('min-height', 'calc(100vh - 60px)', 'important');
+                        jitsiCont.style.setProperty('flex', '1 1 auto', 'important');
                     }}
                 }} else {{
                     try {{
@@ -1517,17 +1521,17 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                     }}
 
                     master.classList.remove('is-fullscreen');
-                    if (floatBtn) {{
-                        floatBtn.style.display = 'none';
-                    }}
                     if (topFsBtn) {{
                         topFsBtn.innerHTML = '⛶ Full Screen';
+                        topFsBtn.classList.remove('fs-active');
                     }}
                     if (window.frameElement) {{
                         window.frameElement.style.height = "{component_height}px";
                     }}
                     if (jitsiCont) {{
-                        jitsiCont.style.height = "520px";
+                        jitsiCont.style.setProperty('height', '520px', 'important');
+                        jitsiCont.style.setProperty('min-height', '520px', 'important');
+                        jitsiCont.style.setProperty('flex', '0 0 520px', 'important');
                     }}
                 }}
             }}
@@ -1941,6 +1945,8 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                             startWithVideoMuted: true,
                             startWithAudioMuted: {'false' if is_teacher else 'true'},
                             disableDeepLinking: true,
+                            disableReactions: true,
+                            disableReactionsModeration: true,
                             toolbarButtons: {tb_buttons},
                             MAIN_TOOLBAR_BUTTONS: {tb_buttons}{student_restrictions_js}
                         }},
