@@ -798,13 +798,64 @@ def get_live_class_state() -> dict:
     return sess
 
 
+def auto_log_student_attendance(student_username: str, student_name: str, room_name: str, topic: str = "Live Class") -> bool:
+    """
+    100% fail-safe attendance logger.
+    Automatically logs attendance for a student immediately when the live class is active.
+    Prevents duplicate entries for the same student on the same date and room.
+    """
+    if not student_username or not room_name:
+        return False
+    un = str(student_username).strip().lower()
+    fn = str(student_name).strip() if student_name else un
+    rm = str(room_name).strip()
+    tp = str(topic).strip() if topic else "Urdu & Arabic Live Class"
+    today_str = str(datetime.date.today())
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("""
+            SELECT id FROM attendance WHERE LOWER(student_username) = ? AND date = ? AND room_name = ?
+            """, (un, today_str, rm))
+            if not c.fetchone():
+                c.execute("""
+                INSERT INTO attendance (student_username, student_name, room_name, topic, join_timestamp, date)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, (un, fn, rm, tp, now_str, today_str))
+                conn.commit()
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+
+        if is_supabase_active():
+            ok, rows = supabase_request(
+                "GET", "attendance",
+                params=f"student_username=eq.{un}&date=eq.{today_str}&room_name=eq.{rm}&select=id"
+            )
+            if ok and not rows:
+                supabase_request("POST", "attendance", {
+                    "student_username": un,
+                    "student_name": fn,
+                    "room_name": rm,
+                    "topic": tp,
+                    "join_timestamp": now_str,
+                    "date": today_str
+                })
+        return True
+    except Exception as e:
+        logger.warning(f"auto_log_student_attendance error: {e}")
+        return False
+
+
 def start_live_class(topic: str, subject: str = "Urdu / Arabic", jitsi_server: str = "jitsi.riot.im", room_name: str = "SistersLiveClass_MasterRoom", teacher_notes: str = "", host_teacher: str = "") -> bool:
     """
     100% fail-safe live broadcast starter.
     Explicitly runs INSERT OR REPLACE on class_state and class_session,
-    immediately flushes WAL, updates session state, and initiates non-blocking background sync.
+    immediately marks attendance for all enrolled active students,
+    flushes WAL, updates session state, and initiates non-blocking background sync.
     """
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    today_str = str(datetime.date.today())
     h_name = host_teacher.strip() if host_teacher.strip() else (st.session_state.get('name') or "Teacher")
     t_topic = topic.strip() if topic.strip() else "Urdu & Arabic Live Class"
     t_server = jitsi_server.strip() if jitsi_server.strip() else "jitsi.riot.im"
@@ -823,6 +874,21 @@ def start_live_class(topic: str, subject: str = "Urdu / Arabic", jitsi_server: s
             INSERT OR REPLACE INTO class_session (id, is_live, topic, room_name, server, teacher_notes, host_teacher, started_at)
             VALUES (1, 1, ?, ?, ?, ?, ?, ?)
             """, (t_topic, t_room, t_server, t_notes, h_name, now_str))
+
+            # Automatically mark attendance for all enrolled active students immediately as teacher goes live!
+            c_att = conn.cursor()
+            c_att.execute("SELECT username, full_name FROM users WHERE role = 'student' AND is_active = 1")
+            enrolled = [dict(r) for r in c_att.fetchall()]
+            for s_row in enrolled:
+                s_un = s_row['username'].strip().lower()
+                s_fn = s_row['full_name'] or s_un
+                c_att.execute("SELECT id FROM attendance WHERE LOWER(student_username) = ? AND date = ? AND room_name = ?", (s_un, today_str, t_room))
+                if not c_att.fetchone():
+                    c_att.execute("""
+                    INSERT INTO attendance (student_username, student_name, room_name, topic, join_timestamp, date)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """, (s_un, s_fn, t_room, t_topic, now_str, today_str))
+
             conn.commit()
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
     except Exception as e:
@@ -843,7 +909,7 @@ def start_live_class(topic: str, subject: str = "Urdu / Arabic", jitsi_server: s
 
     # Non-blocking background GitHub sync
     try:
-        trigger_cloud_sync(f"Started live class '{t_topic}'", blocking=False)
+        trigger_cloud_sync(f"Started live class '{t_topic}' & logged student attendance", blocking=False)
     except Exception:
         pass
 
@@ -4887,7 +4953,7 @@ def render_teacher_dashboard():
         sub_att, sub_acc = st.tabs(["📊 Live Attendance Logs", "👤 Student Accounts & Access Control"])
 
         with sub_att:
-            st.markdown("### 📋 Attendance Records")
+            st.markdown("### 📋 Attendance Records (Auto-Logged on Live)")
             records_data = []
             if is_supabase_active():
                 ok, rows = supabase_request("GET", "attendance", params="order=id.desc&select=*")
@@ -4898,8 +4964,21 @@ def render_teacher_dashboard():
                 c.execute("SELECT id, student_name, student_username, room_name, topic, join_timestamp, date FROM attendance ORDER BY id DESC")
                 records_data = [dict(r) for r in c.fetchall()]
 
+            today_str = str(datetime.date.today())
+            today_present = [r for r in records_data if str(r.get('date')) == today_str]
+
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border: 1.5px solid #86efac; border-radius: 10px; padding: 12px 18px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <div>
+                    <b style="color: #166534; font-size: 1.0rem;">🟢 Real-Time Attendance Active:</b>
+                    <span style="color: #15803d; font-size: 0.92rem; margin-left: 6px;"><b>{len(today_present)} student(s) automatically marked present today ({today_str})</b></span>
+                </div>
+                <span style="font-size: 0.78rem; background: #16a34a; color: white; padding: 3px 12px; border-radius: 9999px; font-weight: 700;">LIVE AUTO-ATTENDANCE ON</span>
+            </div>
+            """, unsafe_allow_html=True)
+
             if not records_data:
-                st.info("No attendance entries logged yet. Students are logged automatically when clicking 'Join Live Class'.")
+                st.info("No attendance entries logged yet. Students are logged automatically the moment the teacher goes live.")
             else:
                 st.dataframe(records_data, use_container_width=True, hide_index=True)
 
@@ -5079,13 +5158,19 @@ def render_student_top_status_fragment():
     """
     student_username = st.session_state.get("username", "")
     student_name = st.session_state.get("name", "Student")
-    # 1. Live Class Status Auto-Check
+    # 1. Live Class Status Auto-Check & Immediate Auto-Attendance
     live_sess = get_live_class_state()
     is_live = bool(live_sess.get('is_live', 0))
     if is_live:
         topic = live_sess.get('topic') or "Live Lecture"
         teacher = live_sess.get('host_teacher') or "Teacher"
         notes = live_sess.get('teacher_notes') or ""
+        room_name = live_sess.get('room_name') or "SistersLiveClass_MasterRoom"
+
+        # Auto-log student attendance the moment teacher is live!
+        if student_username:
+            auto_log_student_attendance(student_username, student_name, room_name, topic)
+
         st.markdown(f"""
         <div style="background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%); color: white; padding: 14px 20px; border-radius: 12px; margin-bottom: 14px; box-shadow: 0 6px 20px rgba(220, 38, 38, 0.35); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
             <div style="display: flex; align-items: center; gap: 12px;">
@@ -5095,10 +5180,13 @@ def render_student_top_status_fragment():
                     <div style="font-size: 0.92rem; opacity: 0.95; margin-top: 2px;">
                         <b>{topic}</b> &bull; Conducted by <b>{teacher}</b> {f'— <i>{notes}</i>' if notes else ''}
                     </div>
+                    <div style="display:inline-block; font-size:0.8rem; background:rgba(34,197,94,0.3); border:1px solid #86efac; color:#f0fdf4; padding:2px 10px; border-radius:9999px; font-weight:700; margin-top:4px;">
+                        ✅ Attendance Automatically Logged: Present
+                    </div>
                 </div>
             </div>
             <div style="background: rgba(255, 255, 255, 0.25); border: 1px solid rgba(255,255,255,0.4); padding: 6px 14px; border-radius: 9999px; font-size: 0.82rem; font-weight: 700; letter-spacing: 0.5px;">
-                🎥 SWITCH TO LIVE CLASSROOM TAB TO JOIN
+                🎥 SWITCH TO LIVE TAB TO JOIN
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -5329,42 +5417,26 @@ def render_student_dashboard():
             </div>
             """, unsafe_allow_html=True)
 
+            # Immediately auto-mark student attendance as teacher is live!
+            auto_log_student_attendance(st.session_state.username, st.session_state.name, room_name, session_topic)
+
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border: 1.5px solid #86efac; border-radius: 10px; padding: 10px 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
+                <div>
+                    <b style="color: #166534; font-size: 0.95rem;">✅ Attendance Automatically Recorded:</b>
+                    <span style="color: #15803d; font-size: 0.9rem; margin-left: 6px;">Marked <b>Present</b> for today's live class ({session_topic})</span>
+                </div>
+                <span style="font-size: 0.78rem; background: #16a34a; color: white; padding: 3px 12px; border-radius: 9999px; font-weight: 700;">MARKED PRESENT</span>
+            </div>
+            """, unsafe_allow_html=True)
+
             is_already_joined = st.session_state.get("live_joined", False) or st.session_state.get("joined_live_class", False)
             if not is_already_joined:
                 col_j1, col_j2, col_j3 = st.columns([1, 2, 1])
                 with col_j2:
                     with st.form("join_live_form"):
-                        btn_join = st.form_submit_button("🚀 Join Live Class Now (Logs Attendance)", type="primary", use_container_width=True)
+                        btn_join = st.form_submit_button("🎥 Enter Live Classroom Video & Whiteboard", type="primary", use_container_width=True)
                         if btn_join:
-                            # Fail-safe attendance logging: even if DB encounters locks/delays,
-                            # NEVER block the student from joining!
-                            try:
-                                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                today_str = str(datetime.date.today())
-                                with get_db_connection() as att_conn:
-                                    att_c = att_conn.cursor()
-                                    att_c.execute("""
-                                    SELECT id FROM attendance WHERE student_username = ? AND date = ? AND room_name = ?
-                                    """, (st.session_state.username, today_str, room_name))
-                                    if not att_c.fetchone():
-                                        att_c.execute("""
-                                        INSERT INTO attendance (student_username, student_name, room_name, topic, join_timestamp, date)
-                                        VALUES (?, ?, ?, ?, ?, ?)
-                                        """, (st.session_state.username, st.session_state.name, room_name, session_topic, now_str, today_str))
-                                        att_conn.commit()
-
-                                if is_supabase_active():
-                                    supabase_request("POST", "attendance", {
-                                        "student_username": st.session_state.username,
-                                        "student_name": st.session_state.name,
-                                        "room_name": room_name,
-                                        "topic": session_topic,
-                                        "join_timestamp": now_str,
-                                        "date": today_str
-                                    })
-                            except Exception as att_err:
-                                print(f"Non-critical attendance log error: {att_err}")
-
                             st.session_state.live_joined = True
                             st.session_state.joined_live_class = True
                             st.rerun()
