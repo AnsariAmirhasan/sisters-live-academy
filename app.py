@@ -188,7 +188,7 @@ def sync_db_to_cloud(commit_message: str = "Auto-sync database") -> tuple:
         sha = None
         try:
             req_get = urllib.request.Request(f"{api_url}?ref=main", headers=headers)
-            with urllib.request.urlopen(req_get, timeout=8) as resp:
+            with urllib.request.urlopen(req_get, timeout=4) as resp:
                 if resp.status == 200:
                     info = json.loads(resp.read().decode('utf-8'))
                     sha = info.get("sha")
@@ -213,7 +213,7 @@ def sync_db_to_cloud(commit_message: str = "Auto-sync database") -> tuple:
             headers=headers,
             method="PUT"
         )
-        with urllib.request.urlopen(req_put, timeout=20) as resp:
+        with urllib.request.urlopen(req_put, timeout=4) as resp:
             if resp.status in (200, 201):
                 return True, "Database synced to GitHub successfully!"
             return False, f"Unexpected response status: {resp.status}"
@@ -641,6 +641,262 @@ def render_quick_recording_uploader(key_suffix: str = "main", title: str = "Publ
                             st.success(f"✅ Audio lecture uploaded and published to all students successfully! ({safe_fn})")
                         st.rerun()
 
+def ensure_class_state_table(conn=None):
+    """
+    100% fail-safe initialization and schema migration for class_state and class_session.
+    Ensures class_state is a REAL SQLite table (not a view) with all required columns:
+    id, is_live, topic, subject, jitsi_server, room_name, teacher_note, host_teacher, started_at, ended_at.
+    """
+    if conn is None:
+        conn = get_db()
+
+    try:
+        # 1. If class_state exists as a view, drop it so it can be a real writable table
+        c_check = conn.cursor()
+        c_check.execute("SELECT type FROM sqlite_master WHERE name = 'class_state'")
+        row_type = c_check.fetchone()
+        if row_type and row_type[0] == 'view':
+            conn.execute("DROP VIEW IF EXISTS class_state")
+            conn.commit()
+    except Exception:
+        pass
+
+    # 2. Create class_state as a real table
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS class_state (
+        id INTEGER PRIMARY KEY,
+        is_live INTEGER DEFAULT 0,
+        topic TEXT DEFAULT 'Urdu & Arabic Live Class',
+        subject TEXT DEFAULT 'Urdu / Arabic',
+        jitsi_server TEXT DEFAULT 'jitsi.riot.im',
+        room_name TEXT DEFAULT 'SistersLiveClass_MasterRoom',
+        teacher_note TEXT DEFAULT '',
+        host_teacher TEXT DEFAULT 'Lead Teacher',
+        started_at TEXT,
+        ended_at TEXT
+    )
+    """)
+
+    # 3. Ensure all required columns exist via ALTER TABLE checks
+    cols_to_check = {
+        'is_live': "INTEGER DEFAULT 0",
+        'topic': "TEXT DEFAULT 'Urdu & Arabic Live Class'",
+        'subject': "TEXT DEFAULT 'Urdu / Arabic'",
+        'jitsi_server': "TEXT DEFAULT 'jitsi.riot.im'",
+        'room_name': "TEXT DEFAULT 'SistersLiveClass_MasterRoom'",
+        'teacher_note': "TEXT DEFAULT ''",
+        'host_teacher': "TEXT DEFAULT 'Lead Teacher'",
+        'started_at': "TEXT",
+        'ended_at': "TEXT"
+    }
+    try:
+        c_cur = conn.cursor()
+        c_cur.execute("PRAGMA table_info(class_state)")
+        existing_cols = {r[1] for r in c_cur.fetchall()}
+        for col_name, col_def in cols_to_check.items():
+            if col_name not in existing_cols:
+                try:
+                    conn.execute(f"ALTER TABLE class_state ADD COLUMN {col_name} {col_def}")
+                except Exception:
+                    pass
+        conn.commit()
+    except Exception:
+        pass
+
+    # 4. Ensure row 1 exists in class_state
+    try:
+        c_cur = conn.cursor()
+        c_cur.execute("SELECT COUNT(*) as cnt FROM class_state WHERE id = 1")
+        if c_cur.fetchone()['cnt'] == 0:
+            conn.execute("""
+            INSERT OR REPLACE INTO class_state (id, is_live, topic, subject, jitsi_server, room_name, teacher_note, host_teacher)
+            VALUES (1, 0, 'Urdu & Arabic Live Class', 'Urdu / Arabic', 'jitsi.riot.im', 'SistersLiveClass_MasterRoom', 'Welcome! Camera is OFF by default. Unmute mic to ask doubts.', 'Lead Teacher')
+            """)
+            conn.commit()
+    except Exception:
+        pass
+
+    # 5. Maintain compatibility table class_session
+    try:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS class_session (
+            id INTEGER PRIMARY KEY,
+            is_live INTEGER DEFAULT 0,
+            topic TEXT DEFAULT 'Urdu & Arabic Live Class',
+            room_name TEXT DEFAULT 'SistersLiveClass_MasterRoom',
+            server TEXT DEFAULT 'jitsi.riot.im',
+            started_at TEXT,
+            ended_at TEXT,
+            teacher_notes TEXT DEFAULT '',
+            host_teacher TEXT DEFAULT 'Lead Teacher'
+        )
+        """)
+        c_cur = conn.cursor()
+        c_cur.execute("PRAGMA table_info(class_session)")
+        s_cols = {r[1] for r in c_cur.fetchall()}
+        if 'server' not in s_cols:
+            conn.execute("ALTER TABLE class_session ADD COLUMN server TEXT DEFAULT 'jitsi.riot.im'")
+        if 'teacher_notes' not in s_cols:
+            conn.execute("ALTER TABLE class_session ADD COLUMN teacher_notes TEXT DEFAULT ''")
+        if 'host_teacher' not in s_cols:
+            conn.execute("ALTER TABLE class_session ADD COLUMN host_teacher TEXT DEFAULT 'Lead Teacher'")
+        c_cur.execute("SELECT COUNT(*) as cnt FROM class_session WHERE id = 1")
+        if c_cur.fetchone()['cnt'] == 0:
+            conn.execute("""
+            INSERT OR REPLACE INTO class_session (id, is_live, topic, room_name, server, teacher_notes, host_teacher)
+            VALUES (1, 0, 'Urdu & Arabic Live Class', 'SistersLiveClass_MasterRoom', 'jitsi.riot.im', 'Welcome! Camera is OFF by default. Unmute mic to ask doubts.', 'Lead Teacher')
+            """)
+        conn.commit()
+    except Exception:
+        pass
+
+
+def get_live_class_state() -> dict:
+    """
+    Directly reads live broadcast state from SQLite without stale cache.
+    Reconciles class_state, class_session, and st.session_state.is_live_local.
+    """
+    conn = get_db()
+    ensure_class_state_table(conn)
+    c = conn.cursor()
+
+    row = None
+    try:
+        c.execute("SELECT * FROM class_state WHERE id = 1")
+        row = c.fetchone()
+    except Exception:
+        pass
+
+    if not row:
+        try:
+            c.execute("SELECT * FROM class_session WHERE id = 1")
+            row = c.fetchone()
+        except Exception:
+            pass
+
+    sess = dict(row) if row else {
+        'id': 1, 'is_live': 0, 'topic': 'Urdu & Arabic Live Class',
+        'subject': 'Urdu / Arabic', 'jitsi_server': 'jitsi.riot.im', 'server': 'jitsi.riot.im',
+        'room_name': 'SistersLiveClass_MasterRoom', 'teacher_note': '', 'teacher_notes': '',
+        'host_teacher': 'Lead Teacher', 'started_at': 'Recently'
+    }
+
+    # Normalize fields across schemas
+    sess['jitsi_server'] = sess.get('jitsi_server') or sess.get('server') or 'jitsi.riot.im'
+    sess['server'] = sess['jitsi_server']
+    sess['teacher_note'] = sess.get('teacher_note') or sess.get('teacher_notes') or ''
+    sess['teacher_notes'] = sess['teacher_note']
+    sess['topic'] = sess.get('topic') or 'Urdu & Arabic Live Class'
+    sess['room_name'] = sess.get('room_name') or 'SistersLiveClass_MasterRoom'
+    sess['started_at'] = sess.get('started_at') or 'Recently'
+    sess['host_teacher'] = sess.get('host_teacher') or 'Lead Teacher'
+
+    # Honor immediate local live toggle for instantaneous reactivity
+    if st.session_state.get('is_live_local') is True:
+        sess['is_live'] = 1
+
+    return sess
+
+
+def start_live_class(topic: str, subject: str = "Urdu / Arabic", jitsi_server: str = "jitsi.riot.im", room_name: str = "SistersLiveClass_MasterRoom", teacher_notes: str = "", host_teacher: str = "") -> bool:
+    """
+    100% fail-safe live broadcast starter.
+    Explicitly runs INSERT OR REPLACE on class_state and class_session,
+    immediately flushes WAL, updates session state, and initiates non-blocking background sync.
+    """
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    h_name = host_teacher.strip() if host_teacher.strip() else (st.session_state.get('name') or "Teacher")
+    t_topic = topic.strip() if topic.strip() else "Urdu & Arabic Live Class"
+    t_server = jitsi_server.strip() if jitsi_server.strip() else "jitsi.riot.im"
+    t_room = room_name.strip() if room_name.strip() else "SistersLiveClass_MasterRoom"
+    t_notes = teacher_notes.strip() if teacher_notes.strip() else "Camera is OFF by default. Unmute mic to ask doubts."
+    t_subject = subject.strip() if subject.strip() else "Urdu / Arabic"
+
+    try:
+        with get_db_connection() as conn:
+            ensure_class_state_table(conn)
+            conn.execute("""
+            INSERT OR REPLACE INTO class_state (id, is_live, topic, subject, jitsi_server, room_name, teacher_note, host_teacher, started_at)
+            VALUES (1, 1, ?, ?, ?, ?, ?, ?, ?)
+            """, (t_topic, t_subject, t_server, t_room, t_notes, h_name, now_str))
+            conn.execute("""
+            INSERT OR REPLACE INTO class_session (id, is_live, topic, room_name, server, teacher_notes, host_teacher, started_at)
+            VALUES (1, 1, ?, ?, ?, ?, ?, ?)
+            """, (t_topic, t_room, t_server, t_notes, h_name, now_str))
+            conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    except Exception as e:
+        print(f"Error starting live class in SQLite: {e}")
+
+    st.session_state.is_live_local = True
+    st.session_state.jitsi_server = t_server
+
+    # Non-blocking Supabase sync
+    if is_supabase_active():
+        try:
+            supabase_request("PATCH", "class_session", {
+                "is_live": 1, "topic": t_topic, "room_name": t_room,
+                "server": t_server, "teacher_notes": t_notes, "host_teacher": h_name, "started_at": now_str
+            }, params="id=eq.1")
+        except Exception:
+            pass
+
+    # Non-blocking background GitHub sync
+    try:
+        trigger_cloud_sync(f"Started live class '{t_topic}'", blocking=False)
+    except Exception:
+        pass
+
+    return True
+
+
+def end_live_class() -> bool:
+    """100% fail-safe live broadcast terminator"""
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with get_db_connection() as conn:
+            ensure_class_state_table(conn)
+            conn.execute("UPDATE class_state SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
+            conn.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
+            conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    except Exception as e:
+        print(f"Error ending live class in SQLite: {e}")
+
+    st.session_state.is_live_local = False
+
+    if is_supabase_active():
+        try:
+            supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
+        except Exception:
+            pass
+
+    try:
+        trigger_cloud_sync("Ended live class broadcast", blocking=False)
+    except Exception:
+        pass
+
+    return True
+
+
+def reset_studio_state():
+    """Forces cache clear, resets class_state cleanly to offline, and updates session state"""
+    try:
+        if hasattr(st, "cache_data"):
+            st.cache_data.clear()
+        if hasattr(st, "cache_resource"):
+            st.cache_resource.clear()
+        st.session_state.is_live_local = False
+        with get_db_connection() as conn:
+            ensure_class_state_table(conn)
+            conn.execute("UPDATE class_state SET is_live = 0 WHERE id = 1")
+            conn.execute("UPDATE class_session SET is_live = 0 WHERE id = 1")
+            conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    except Exception as e:
+        print(f"Error resetting studio state: {e}")
+
+
 def init_database():
     """Initializes SQLite schema and ensures columns exist"""
     conn = get_db()
@@ -680,59 +936,7 @@ def init_database():
         pass
 
     # 2. Live Session State
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS class_session (
-        id INTEGER PRIMARY KEY,
-        is_live INTEGER DEFAULT 0,
-        topic TEXT DEFAULT 'General Coaching Session',
-        room_name TEXT DEFAULT 'SistersClass_Room101',
-        server TEXT DEFAULT 'jitsi.riot.im',
-        started_at TEXT,
-        ended_at TEXT,
-        teacher_notes TEXT DEFAULT '',
-        host_teacher TEXT DEFAULT 'Lead Teacher'
-    )
-    """)
-
-    # Safe automatic column migrations for class_session
-    try:
-        c.execute("PRAGMA table_info(class_session)")
-        existing_cols = [r[1] for r in c.fetchall()]
-        if 'server' not in existing_cols:
-            c.execute("ALTER TABLE class_session ADD COLUMN server TEXT DEFAULT 'jitsi.riot.im'")
-        if 'teacher_notes' not in existing_cols:
-            c.execute("ALTER TABLE class_session ADD COLUMN teacher_notes TEXT DEFAULT ''")
-        if 'host_teacher' not in existing_cols:
-            c.execute("ALTER TABLE class_session ADD COLUMN host_teacher TEXT DEFAULT 'Lead Teacher'")
-        conn.commit()
-    except Exception:
-        pass
-
-    # Ensure compatibility view class_state exists
-    try:
-        c.execute("CREATE VIEW IF NOT EXISTS class_state AS SELECT * FROM class_session")
-        conn.commit()
-    except Exception:
-        pass
-
-    # Ensure row 1 exists
-    try:
-        c.execute("SELECT COUNT(*) as cnt FROM class_session WHERE id = 1")
-        if c.fetchone()['cnt'] == 0:
-            c.execute("""
-            INSERT INTO class_session (id, is_live, topic, room_name, server, teacher_notes, host_teacher)
-            VALUES (1, 0, 'Urdu & Arabic Live Class', 'SistersLiveClass_MasterRoom', 'jitsi.riot.im', 'Welcome! Camera is OFF by default. Turn on mic when asked.', 'Lead Teacher')
-            """)
-            conn.commit()
-        else:
-            try:
-                c.execute("UPDATE class_session SET server = 'jitsi.riot.im' WHERE server = 'meet.ffmuc.net' OR server IS NULL OR server = ''")
-                c.execute("UPDATE class_session SET topic = 'Urdu & Arabic Live Class' WHERE topic LIKE '%Mathematics%' OR topic LIKE '%Science%'")
-                conn.commit()
-            except Exception:
-                pass
-    except Exception:
-        pass
+    ensure_class_state_table(conn)
 
 
     # 3. Attendance
@@ -2766,29 +2970,30 @@ def render_class_scheduler_widget(is_admin: bool = False):
                     with btn_c1:
                         with st.form(f"launch_sc_form_{sc['id']}_{'adm' if is_admin else 'tch'}"):
                             if st.form_submit_button("🚀 Launch Live Now", type="primary", use_container_width=True):
-                                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 host_name = sc.get('teacher_name') or st.session_state.name or "Teacher"
+                                start_live_class(
+                                    topic=sc.get('topic', 'Urdu & Arabic Live Class'),
+                                    subject=sc.get('subject', 'Urdu / Arabic'),
+                                    jitsi_server="jitsi.riot.im",
+                                    room_name=sc.get('room_name', 'SistersLiveClass_MasterRoom'),
+                                    teacher_notes=sc.get('notes', ''),
+                                    host_teacher=host_name
+                                )
                                 try:
                                     with get_db_connection() as conn_w:
-                                        conn_w.execute("""
-                                        UPDATE class_session 
-                                        SET is_live = 1, topic = ?, room_name = ?, teacher_notes = ?, started_at = ?, host_teacher = ?
-                                        WHERE id = 1
-                                        """, (sc['topic'], sc['room_name'], sc.get('notes', ''), now_str, host_name))
                                         conn_w.execute("UPDATE scheduled_classes SET status = 'Live' WHERE id = ?", (sc['id'],))
                                         conn_w.commit()
-
-                                    if is_supabase_active():
-                                        supabase_request("PATCH", "class_session", {
-                                            "is_live": 1, "topic": sc['topic'], "room_name": sc['room_name'],
-                                            "teacher_notes": sc.get('notes', ''), "started_at": now_str, "host_teacher": host_name
-                                        }, params="id=eq.1")
+                                        conn_w.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                                except Exception:
+                                    pass
+                                if is_supabase_active():
+                                    try:
                                         supabase_request("PATCH", "scheduled_classes", {"status": "Live"}, params=f"id=eq.{sc['id']}")
-
-                                    st.success(f"Broadcast started for '{sc['topic']}'! Students in waiting lounge are now live.")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Error launching live broadcast: {e}")
+                                    except Exception:
+                                        pass
+                                st.session_state.is_live_local = True
+                                st.success(f"Broadcast started for '{sc['topic']}'! Students in waiting lounge are now live.")
+                                st.rerun()
 
                     with btn_c2:
                         with st.form(f"done_sc_form_{sc['id']}_{'adm' if is_admin else 'tch'}"):
@@ -2835,10 +3040,8 @@ def render_live_studio_hero_card(is_admin: bool = False, show_stop_form: bool = 
     conn = get_db()
     c = conn.cursor()
 
-    # Session state
-    c.execute("SELECT * FROM class_session WHERE id = 1")
-    raw_sess = c.fetchone()
-    sess = dict(raw_sess) if raw_sess else {}
+    # Session state - fetched fresh without stale cache
+    sess = get_live_class_state()
 
     is_live = bool(sess.get('is_live', 0))
     session_topic = sess.get('topic') or "Urdu & Arabic Live Class"
@@ -2875,53 +3078,58 @@ def render_live_studio_hero_card(is_admin: bool = False, show_stop_form: bool = 
     col_hero_left, col_hero_right = st.columns([1.35, 1.15], gap="medium")
 
     with col_hero_left:
+        # Header / Status row with Reset Studio State recovery button
+        col_badge_head, col_badge_reset = st.columns([2.8, 1.2])
+
         if is_live:
-            st.markdown(f"""
-            <div class="glass-card" style="border: 2px solid #22c55e; background: linear-gradient(145deg, #f0fdf4 0%, #dcfce7 100%); margin-bottom: 12px; padding: 18px 20px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                    <div class="live-badge">
-                        <span class="live-dot"></span>
-                        <span>🔴 BROADCAST STATUS: LIVE NOW</span>
+            with col_badge_head:
+                st.markdown(f"""
+                <div class="glass-card" style="border: 2px solid #22c55e; background: linear-gradient(145deg, #f0fdf4 0%, #dcfce7 100%); margin-bottom: 8px; padding: 14px 18px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                        <div class="live-badge">
+                            <span class="live-dot"></span>
+                            <span>🔴 BROADCAST STATUS: LIVE NOW</span>
+                        </div>
+                        <span style="font-size: 0.85rem; color: #166534; font-weight: 700;">Started: {started_at}</span>
                     </div>
-                    <span style="font-size: 0.85rem; color: #166534; font-weight: 700;">Started: {started_at}</span>
+                    <h3 style="margin: 8px 0 2px 0; color: #14532d; font-size: 1.2rem;">{session_topic}</h3>
+                    <p style="margin: 0; color: #166534; font-size: 0.85rem;">
+                        <b>Host:</b> {host_teacher} &nbsp;|&nbsp; <b>Note:</b> {teacher_notes or 'Microphones active for student questions'}
+                    </p>
                 </div>
-                <h3 style="margin: 10px 0 4px 0; color: #14532d; font-size: 1.25rem;">{session_topic}</h3>
-                <p style="margin: 0; color: #166534; font-size: 0.9rem;">
-                    <b>Host:</b> {host_teacher} &nbsp;|&nbsp; <b>Note:</b> {teacher_notes or 'Microphones active for student questions'}
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
+            with col_badge_reset:
+                if st.button("🔄 Reset Studio State", key=f"reset_studio_live_{'adm' if is_admin else 'tch'}", help="Force reset studio state if stuck"):
+                    reset_studio_state()
+                    st.success("Studio state reset.")
+                    st.rerun()
 
             if show_stop_form:
                 with st.form(f"hero_stop_form_{'adm' if is_admin else 'tch'}"):
                     btn_stop = st.form_submit_button("🛑 End Live Class for All", type="primary", use_container_width=True)
                     if btn_stop:
-                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        try:
-                            with get_db_connection() as conn_w:
-                                conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
-                                conn_w.commit()
-                        except Exception as e:
-                            print(f"Error ending live class: {e}")
-
-                        if is_supabase_active():
-                            supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
-
+                        end_live_class()
                         st.warning("Live class ended. Students returned to offline waiting status.")
                         st.rerun()
 
         else:
-            st.markdown("""
-            <div class="glass-card" style="border: 1px solid #e2e8f0; background: #ffffff; margin-bottom: 12px; padding: 16px 20px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                    <div class="offline-badge">
-                        <span style="width:9px; height:9px; border-radius:50%; background:#94a3b8; display:inline-block;"></span>
-                        <span>⚪ STUDIO READY — OFFLINE</span>
+            with col_badge_head:
+                st.markdown("""
+                <div class="glass-card" style="border: 1px solid #e2e8f0; background: #ffffff; margin-bottom: 8px; padding: 12px 18px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                        <div class="offline-badge">
+                            <span style="width:9px; height:9px; border-radius:50%; background:#94a3b8; display:inline-block;"></span>
+                            <span>⚪ STUDIO READY — OFFLINE</span>
+                        </div>
+                        <span style="font-size: 0.82rem; color: #64748b; font-weight: 500;">Students waiting will join automatically</span>
                     </div>
-                    <span style="font-size: 0.82rem; color: #64748b; font-weight: 500;">Students waiting will join automatically</span>
                 </div>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
+            with col_badge_reset:
+                if st.button("🔄 Reset Studio State", key=f"reset_studio_off_{'adm' if is_admin else 'tch'}", help="Clear cached studio state"):
+                    reset_studio_state()
+                    st.success("Studio state reset.")
+                    st.rerun()
 
             with st.form(f"hero_start_form_{'adm' if is_admin else 'tch'}"):
                 f_topic = st.text_input("Class Topic", value=session_topic or "Urdu Grammar / Arabic Reading Lesson 1", placeholder="e.g. Urdu Grammar Lesson 1")
@@ -2929,28 +3137,17 @@ def render_live_studio_hero_card(is_admin: bool = False, show_stop_form: bool = 
                 btn_start = st.form_submit_button("🚀 Start Live Class Now", type="primary", use_container_width=True)
 
                 if btn_start:
-                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     h_name = st.session_state.name or ("Super Admin" if is_admin else "Teacher")
                     target_server = "jitsi.riot.im"
                     target_room = room_name or "SistersLiveClass_MasterRoom"
-                    try:
-                        with get_db_connection() as conn_w:
-                            conn_w.execute("""
-                            UPDATE class_session 
-                            SET is_live = 1, topic = ?, room_name = ?, server = ?, teacher_notes = ?, host_teacher = ?, started_at = ?
-                            WHERE id = 1
-                            """, (f_topic.strip(), target_room, target_server, f_notes.strip(), h_name, now_str))
-                            conn_w.commit()
-                    except Exception as e:
-                        print(f"Error starting live class: {e}")
-
-                    if is_supabase_active():
-                        supabase_request("PATCH", "class_session", {
-                            "is_live": 1, "topic": f_topic.strip(), "room_name": target_room,
-                            "server": target_server, "teacher_notes": f_notes.strip(), "host_teacher": h_name, "started_at": now_str
-                        }, params="id=eq.1")
-
-                    st.session_state.jitsi_server = target_server
+                    start_live_class(
+                        topic=f_topic,
+                        subject="Urdu / Arabic",
+                        jitsi_server=target_server,
+                        room_name=target_room,
+                        teacher_notes=f_notes,
+                        host_teacher=h_name
+                    )
                     st.success("Live broadcast started! Connected to all students.")
                     st.rerun()
 
@@ -3107,17 +3304,7 @@ def render_admin_dashboard():
     c = conn.cursor()
 
     # Get live session status safely
-    sess = {}
-    if is_supabase_active():
-        ok, rows = supabase_request("GET", "class_session", params="id=eq.1&select=*")
-        if ok and rows:
-            sess = rows[0]
-
-    if not sess:
-        c.execute("SELECT * FROM class_session WHERE id = 1")
-        raw_sess = c.fetchone()
-        sess = dict(raw_sess) if raw_sess else {}
-
+    sess = get_live_class_state()
     is_live = bool(sess.get('is_live', 0))
     room_name = sess.get('room_name') or 'SistersLiveClass_MasterRoom'
     session_topic = sess.get('topic') or 'General Coaching Session'
@@ -3351,21 +3538,18 @@ def render_admin_dashboard():
                 </div>
                 """, unsafe_allow_html=True)
             with col_live_top_btn:
-                with st.form("end_class_top_adm"):
-                    btn_top = st.form_submit_button("🛑 End Live Class", type="primary", use_container_width=True)
-                    if btn_top:
-                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        try:
-                            with get_db_connection() as conn_w:
-                                conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
-                                conn_w.commit()
-                        except Exception as e:
-                            print(f"Error ending live class: {e}")
-
-                        if is_supabase_active():
-                            supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
-
-                        st.warning("Live class ended.")
+                col_btn_end, col_btn_rst = st.columns([1.2, 1])
+                with col_btn_end:
+                    with st.form("end_class_top_adm"):
+                        btn_top = st.form_submit_button("🛑 End Live", type="primary", use_container_width=True)
+                        if btn_top:
+                            end_live_class()
+                            st.warning("Live class ended.")
+                            st.rerun()
+                with col_btn_rst:
+                    if st.button("🔄 Reset Studio", key="rst_top_adm", use_container_width=True, help="Force reset studio state"):
+                        reset_studio_state()
+                        st.success("Studio reset.")
                         st.rerun()
 
             st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
@@ -3386,17 +3570,7 @@ def render_admin_dashboard():
             with st.form("end_class_bottom_mobile_adm"):
                 btn_stop = st.form_submit_button("🛑 End Live Class for All", type="primary", use_container_width=True)
                 if btn_stop:
-                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    try:
-                        with get_db_connection() as conn_w:
-                            conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
-                            conn_w.commit()
-                    except Exception as e:
-                        print(f"Error ending live class: {e}")
-
-                    if is_supabase_active():
-                        supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
-
+                    end_live_class()
                     st.warning("Live class ended. Students returned to offline waiting status.")
                     st.rerun()
 
@@ -3826,22 +4000,12 @@ def render_teacher_dashboard():
     conn = get_db()
     c = conn.cursor()
 
-    # Get live session status safely (from Supabase or SQLite)
-    sess = {}
-    if is_supabase_active():
-        ok, rows = supabase_request("GET", "class_session", params="id=eq.1&select=*")
-        if ok and rows:
-            sess = rows[0]
-
-    if not sess:
-        c.execute("SELECT * FROM class_session WHERE id = 1")
-        raw_sess = c.fetchone()
-        sess = dict(raw_sess) if raw_sess else {}
-
+    # Get live session status safely
+    sess = get_live_class_state()
     is_live = bool(sess.get('is_live', 0))
     room_name = sess.get('room_name') or 'SistersLiveClass_MasterRoom'
     session_topic = sess.get('topic') or 'General Coaching Session'
-    server = sess.get('server') or "meet.ffmuc.net"
+    server = sess.get('server') or "jitsi.riot.im"
     teacher_notes = sess.get('teacher_notes') or ""
     started_at = sess.get('started_at') or "Recently"
 
@@ -3885,21 +4049,18 @@ def render_teacher_dashboard():
                 </div>
                 """, unsafe_allow_html=True)
             with col_live_top_btn:
-                with st.form("end_class_top_tch"):
-                    btn_top = st.form_submit_button("🛑 End Live Class", type="primary", use_container_width=True)
-                    if btn_top:
-                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        try:
-                            with get_db_connection() as conn_w:
-                                conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
-                                conn_w.commit()
-                        except Exception as e:
-                            print(f"Error ending live class: {e}")
-
-                        if is_supabase_active():
-                            supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
-
-                        st.warning("Live class ended.")
+                col_btn_end, col_btn_rst = st.columns([1.2, 1])
+                with col_btn_end:
+                    with st.form("end_class_top_tch"):
+                        btn_top = st.form_submit_button("🛑 End Live", type="primary", use_container_width=True)
+                        if btn_top:
+                            end_live_class()
+                            st.warning("Live class ended.")
+                            st.rerun()
+                with col_btn_rst:
+                    if st.button("🔄 Reset Studio", key="rst_top_tch", use_container_width=True, help="Force reset studio state"):
+                        reset_studio_state()
+                        st.success("Studio reset.")
                         st.rerun()
 
             st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
@@ -3920,17 +4081,7 @@ def render_teacher_dashboard():
             with st.form("end_class_bottom_mobile_tch"):
                 btn_stop = st.form_submit_button("🛑 End Live Class for All", type="primary", use_container_width=True)
                 if btn_stop:
-                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    try:
-                        with get_db_connection() as conn_w:
-                            conn_w.execute("UPDATE class_session SET is_live = 0, ended_at = ? WHERE id = 1", (now_str,))
-                            conn_w.commit()
-                    except Exception as e:
-                        print(f"Error ending live class: {e}")
-
-                    if is_supabase_active():
-                        supabase_request("PATCH", "class_session", {"is_live": 0, "ended_at": now_str}, params="id=eq.1")
-
+                    end_live_class()
                     st.warning("Live class ended. Students returned to offline waiting status.")
                     st.rerun()
 
@@ -4451,21 +4602,11 @@ def render_student_dashboard():
     # STUDENT TAB 1: LIVE CLASSROOM
     # ---------------------------------------------
     with tab_live:
-        sess = {}
-        if is_supabase_active():
-            ok, rows = supabase_request("GET", "class_session", params="id=eq.1&select=*")
-            if ok and rows:
-                sess = rows[0]
-
-        if not sess:
-            c.execute("SELECT * FROM class_session WHERE id = 1")
-            raw_sess = c.fetchone()
-            sess = dict(raw_sess) if raw_sess else {}
-
+        sess = get_live_class_state()
         is_live = bool(sess.get('is_live', 0))
         room_name = sess.get('room_name') or 'SistersLiveClass_MasterRoom'
         session_topic = sess.get('topic') or 'General Coaching Session'
-        server = sess.get('server') or "meet.ffmuc.net"
+        server = sess.get('server') or "jitsi.riot.im"
         teacher_notes = sess.get('teacher_notes') or ""
 
         if not is_live:
