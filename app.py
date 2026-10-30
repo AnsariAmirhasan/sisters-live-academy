@@ -3171,43 +3171,39 @@ def render_fees_management(is_admin: bool = True):
             sel_fee_lbl = st.selectbox("Select Invoice to Update", list(fee_opts.keys()), key=f"fee_up_sel_{'adm' if is_admin else 'tch'}")
             target_fee = fee_opts[sel_fee_lbl]
 
+            is_paid = (target_fee.get('status') == 'Paid')
+            status_badge = (
+                '<span style="background:#10b981; color:white; padding:3px 10px; border-radius:12px; font-weight:700; font-size:0.8rem;">✅ PAID</span>'
+                if is_paid else
+                '<span style="background:#ef4444; color:white; padding:3px 10px; border-radius:12px; font-weight:700; font-size:0.8rem;">⏳ PENDING DUES</span>'
+            )
+
             st.markdown(f"""
-            <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:12px; margin-bottom:12px;">
-                <b>Student:</b> {target_fee['student_name']} (<code>@{target_fee['student_username']}</code>)<br>
-                <b>Title:</b> {target_fee['month_title']} &nbsp;|&nbsp; <b>Amount:</b> <span style="color:#059669; font-weight:700;">₹{target_fee['amount']}</span><br>
-                <b>Due Date:</b> {target_fee['due_date']} &nbsp;|&nbsp; <b>Status:</b> {'🟢 Paid' if target_fee['status'] == 'Paid' else '🔴 Pending Dues'}<br>
-                <b>Payment Date:</b> {target_fee.get('paid_date', '-')} &nbsp;|&nbsp; <b>Marked By:</b> {target_fee.get('marked_by', '-')}
+            <div style="background:#1e293b; border:1px solid #334155; border-radius:10px; padding:14px; margin-bottom:12px; color:#f8fafc;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+                    <div>
+                        <span style="font-size:1.05rem; font-weight:700; color:#f8fafc;">{target_fee['student_name']}</span>
+                        <code style="background:#0f172a; color:#93c5fd; padding:2px 6px; border-radius:4px; font-size:0.85rem; margin-left:6px;">@{target_fee['student_username']}</code>
+                    </div>
+                    <div>
+                        <span style="font-size:1.15rem; font-weight:800; color:#34d399; margin-right:8px;">₹{target_fee['amount']}</span>
+                        {status_badge}
+                    </div>
+                </div>
+                <div style="font-size:0.88rem; color:#cbd5e1; line-height:1.6;">
+                    <b>Invoice Title:</b> {target_fee['month_title']}<br>
+                    <b>Due Date:</b> {target_fee['due_date']} &nbsp;|&nbsp; 
+                    <b>Payment Date:</b> <span style="color:{'#34d399' if is_paid else '#94a3b8'};">{target_fee.get('paid_date', '-')}</span> &nbsp;|&nbsp; 
+                    <b>Verified By:</b> {target_fee.get('marked_by', '-')}
+                </div>
             </div>
             """, unsafe_allow_html=True)
 
-            c_act1, c_act2, c_act3 = st.columns([1, 1, 1])
-
-            with c_act1:
-                with st.form(f"mark_paid_form_{target_fee['id']}_{'adm' if is_admin else 'tch'}"):
-                    if st.form_submit_button("✅ Mark as PAID", type="primary", use_container_width=True):
-                        today_str = str(datetime.date.today())
-                        marker = st.session_state.name or ("Admin" if is_admin else "Teacher")
-                        try:
-                            with get_db_connection() as conn_w:
-                                conn_w.execute("""
-                                UPDATE fees SET status = 'Paid', paid_date = ?, marked_by = ? WHERE id = ?
-                                """, (today_str, marker, target_fee['id']))
-                                conn_w.commit()
-                                trigger_cloud_sync(f"Marked invoice #{target_fee['id']} as Paid")
-
-                            if is_supabase_active():
-                                supabase_request("PATCH", "fees", {
-                                    "status": "Paid", "paid_date": today_str, "marked_by": marker
-                                }, params=f"id=eq.{target_fee['id']}")
-
-                            st.success(f"Invoice #{target_fee['id']} marked as PAID by {marker}!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error marking as paid: {e}")
-
-            with c_act2:
-                with st.form(f"mark_pending_form_{target_fee['id']}_{'adm' if is_admin else 'tch'}"):
-                    if st.form_submit_button("↩️ Mark as UNPAID", use_container_width=True):
+            if is_paid:
+                st.success(f"✅ Invoice #{target_fee['id']} is ALREADY PAID (Recorded on {target_fee.get('paid_date', '-')} by {target_fee.get('marked_by', '-')}).")
+                c_act1, c_act2 = st.columns([1, 1])
+                with c_act1:
+                    if st.button("↩️ Revert to UNPAID (Pending)", key=f"revert_unpaid_{target_fee['id']}_{'adm' if is_admin else 'tch'}", use_container_width=True):
                         try:
                             with get_db_connection() as conn_w:
                                 conn_w.execute("""
@@ -3226,9 +3222,47 @@ def render_fees_management(is_admin: bool = True):
                         except Exception as e:
                             st.error(f"Error updating fee: {e}")
 
-            with c_act3:
-                with st.form(f"delete_fee_form_{target_fee['id']}_{'adm' if is_admin else 'tch'}"):
-                    if st.form_submit_button("🗑️ Delete Invoice", use_container_width=True):
+                with c_act2:
+                    if st.button("🗑️ Delete Invoice", key=f"del_fee_paid_{target_fee['id']}_{'adm' if is_admin else 'tch'}", use_container_width=True):
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("DELETE FROM fees WHERE id = ?", (target_fee['id'],))
+                                conn_w.commit()
+                                trigger_cloud_sync(f"Deleted invoice #{target_fee['id']}")
+
+                            if is_supabase_active():
+                                supabase_request("DELETE", "fees", params=f"id=eq.{target_fee['id']}")
+
+                            st.success(f"Invoice #{target_fee['id']} removed.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error deleting fee: {e}")
+            else:
+                c_act1, c_act2 = st.columns([1.2, 1])
+                with c_act1:
+                    today_str = str(datetime.date.today())
+                    marker = st.session_state.name or ("Admin" if is_admin else "Teacher")
+                    if st.button("✅ Mark as PAID", type="primary", key=f"mark_paid_{target_fee['id']}_{'adm' if is_admin else 'tch'}", use_container_width=True):
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("""
+                                UPDATE fees SET status = 'Paid', paid_date = ?, marked_by = ? WHERE id = ?
+                                """, (today_str, marker, target_fee['id']))
+                                conn_w.commit()
+                                trigger_cloud_sync(f"Marked invoice #{target_fee['id']} as Paid")
+
+                            if is_supabase_active():
+                                supabase_request("PATCH", "fees", {
+                                    "status": "Paid", "paid_date": today_str, "marked_by": marker
+                                }, params=f"id=eq.{target_fee['id']}")
+
+                            st.success(f"Invoice #{target_fee['id']} marked as PAID by {marker}!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error marking as paid: {e}")
+
+                with c_act2:
+                    if st.button("🗑️ Delete Invoice", key=f"del_fee_unpaid_{target_fee['id']}_{'adm' if is_admin else 'tch'}", use_container_width=True):
                         try:
                             with get_db_connection() as conn_w:
                                 conn_w.execute("DELETE FROM fees WHERE id = ?", (target_fee['id'],))
