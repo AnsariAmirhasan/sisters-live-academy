@@ -556,7 +556,7 @@ def process_and_save_recording(uploaded_file, title: str, subject: str, notes: s
     return True, safe_fn, gdrive_synced, final_drive_link
 
 def render_recording_player(rec: dict, is_student: bool = False, key_suffix: str = ""):
-    """Renders either local video player or embedded Google Drive / YouTube player"""
+    """Renders either local audio/video player or embedded Google Drive / YouTube player"""
     drive_link = rec.get('drive_link') or ''
     embed_url = rec.get('embed_url') or ''
     is_local = drive_link.startswith("local://") or embed_url.startswith("local://")
@@ -565,23 +565,39 @@ def render_recording_player(rec: dict, is_student: bool = False, key_suffix: str
         safe_fn = drive_link.replace("local://", "") if drive_link.startswith("local://") else embed_url.replace("local://", "")
         file_path = os.path.join(UPLOAD_DIR, safe_fn)
         if os.path.exists(file_path):
-            st.video(file_path)
+            ext = safe_fn.rsplit('.', 1)[-1].lower() if '.' in safe_fn else ''
+            # Play saved local audio recordings using Streamlit's native audio player
+            # so students can easily listen to recorded lessons on mobile with minimal data
+            is_video = ext in ['mp4', 'mkv', 'avi', 'mov']
+            if is_video:
+                st.video(file_path)
+            else:
+                st.audio(file_path)
+
             try:
                 with open(file_path, "rb") as vf:
                     file_bytes = vf.read()
+                mime_map = {
+                    'webm': 'audio/webm',
+                    'mp3': 'audio/mpeg',
+                    'wav': 'audio/wav',
+                    'm4a': 'audio/mp4',
+                    'ogg': 'audio/ogg',
+                    'mp4': 'video/mp4'
+                }
                 st.download_button(
-                    "📥 Direct Download Video",
+                    "⬇️ Download Audio Lecture" if not is_video else "📥 Direct Download Video",
                     data=file_bytes,
                     file_name=safe_fn,
-                    mime="video/webm" if safe_fn.endswith(".webm") else "video/mp4",
+                    mime=mime_map.get(ext, "application/octet-stream"),
                     type="primary" if is_student else "secondary",
                     use_container_width=True,
                     key=f"dl_loc_{rec.get('id', 0)}_{key_suffix}"
                 )
             except Exception as e:
-                print(f"Error reading local video bytes: {e}")
+                print(f"Error reading local recording bytes: {e}")
         else:
-            st.warning(f"⚠️ Video file `{safe_fn}` not found on server storage.")
+            st.warning(f"⚠️ Recording file `{safe_fn}` not found on server storage.")
     else:
         if "drive.google.com" in embed_url or "youtube.com" in embed_url:
             st.markdown(f"""
@@ -590,7 +606,7 @@ def render_recording_player(rec: dict, is_student: bool = False, key_suffix: str
         if is_student:
             c1, c2 = st.columns(2)
             with c1:
-                st.link_button("📥 Direct Download Video", rec.get('download_url') or drive_link, type="primary", use_container_width=True)
+                st.link_button("⬇️ Download Audio Lecture", rec.get('download_url') or drive_link, type="primary", use_container_width=True)
             with c2:
                 st.link_button("🔗 Open in Google Drive", drive_link, use_container_width=True)
         else:
@@ -598,13 +614,13 @@ def render_recording_player(rec: dict, is_student: bool = False, key_suffix: str
             if dl:
                 st.link_button("📥 Direct Download Link", dl, use_container_width=True)
 
-def render_quick_recording_uploader(key_suffix: str = "main", title: str = "Publish Class Recording Video"):
-    """Reusable widget to upload and publish recordings immediately to all students"""
-    with st.expander(f"☁️ {title}", expanded=False):
-        st.write("Upload a recorded `.webm`, `.mp4`, or `.mkv` file to immediately save and publish it to all Students:")
+def render_quick_recording_uploader(key_suffix: str = "main", title: str = "Publish Audio Lecture / Recording"):
+    """Reusable widget to upload and publish audio lecture recordings immediately to all students"""
+    with st.expander(f"🎙️ {title}", expanded=False):
+        st.write("Upload a recorded `.webm`, `.mp3`, `.wav`, `.m4a`, `.ogg`, or `.mp4` audio lecture to immediately save and publish it to all Students:")
         uploaded_file = st.file_uploader(
-            "Select or drop recording video file",
-            type=["webm", "mp4", "mkv"],
+            "Select or drop audio lecture recording file",
+            type=["webm", "mp3", "wav", "m4a", "ogg", "mp4"],
             key=f"file_up_{key_suffix}"
         )
         if uploaded_file is not None:
@@ -613,16 +629,16 @@ def render_quick_recording_uploader(key_suffix: str = "main", title: str = "Publ
                 up_title = st.text_input("Recording Title", value=uploaded_file.name.rsplit(".", 1)[0], key=f"title_{key_suffix}")
             with up_col2:
                 up_sub = st.text_input("Subject", value="Urdu / Arabic", placeholder="Type any subject e.g. Urdu, Arabic, Tajweed, Grammar...", key=f"sub_{key_suffix}")
-            up_notes = st.text_input("Notes / Summary (Optional)", placeholder="e.g. Chapter 1 exercises, grammar rules", key=f"notes_{key_suffix}")
+            up_notes = st.text_input("Notes / Summary (Optional)", placeholder="e.g. Chapter 1 voice lecture, grammar pronunciation exercises", key=f"notes_{key_suffix}")
 
-            if st.button("🚀 Upload & Publish Recording to Students", type="primary", use_container_width=True, key=f"btn_save_{key_suffix}"):
-                with st.spinner("Saving recording locally and publishing to students..."):
+            if st.button("🚀 Upload & Publish Audio Lecture to Students", type="primary", use_container_width=True, key=f"btn_save_{key_suffix}"):
+                with st.spinner("Saving audio lecture locally and publishing to students..."):
                     ok, safe_fn, gdrive_synced, drive_link = process_and_save_recording(uploaded_file, up_title, up_sub, up_notes)
                     if ok:
                         if gdrive_synced:
-                            st.success(f"✅ Recording published locally & synced to Google Drive folder! ({safe_fn})")
+                            st.success(f"✅ Audio lecture published locally & synced to Google Drive folder! ({safe_fn})")
                         else:
-                            st.success(f"✅ Recording uploaded and published to all students successfully! ({safe_fn})")
+                            st.success(f"✅ Audio lecture uploaded and published to all students successfully! ({safe_fn})")
                         st.rerun()
 
 def init_database():
@@ -1381,13 +1397,13 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             <button id="whiteboard-btn" class="topbar-btn wb-btn" onclick="toggleWhiteboard()">✏️ Whiteboard</button>
             <button id="cam-toggle-btn" class="topbar-btn cam-btn" onclick="switchCamera()">📷 Camera Flip</button>
             <button id="share-screen-btn" class="topbar-btn share-btn" onclick="handleScreenShare()">📖 Share Book / Screen</button>
-            <button id="rec-toggle-btn" class="topbar-btn rec-btn topbar-full-width" onclick="toggleRecording()">⏺️ Record Class (Video + Voice)</button>
+            <button id="rec-toggle-btn" class="topbar-btn rec-btn topbar-full-width" onclick="toggleRecording()">🎙️ Record Audio Lecture</button>
         </div>
         <div id="classroom-notice-toast" style="display:none; padding:6px 10px; margin:4px 8px; border-radius:6px; font-size:0.8rem; color:white; font-weight:600; text-align:center;"></div>
         <div id="rec-status-bar" style="display:none; padding:5px 8px; background:#0f172a; border-bottom:1px solid #334155; justify-content:center; align-items:center; gap:8px;">
             <span style="width:9px; height:9px; border-radius:50%; background:#ef4444; display:inline-block;"></span>
             <span id="rec-timer" style="font-family:monospace; color:#38bdf8; font-weight:bold; font-size:0.88rem;">00:00:00</span>
-            <span style="color:#94a3b8; font-size:0.78rem; font-weight:500;">Recording Video + Audio Active (Click 'Stop' to save)</span>
+            <span style="color:#94a3b8; font-size:0.78rem; font-weight:500;">Recording Voice Lecture Active (Click 'Stop' to save)</span>
         </div>
         """
     else:
@@ -2006,30 +2022,8 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 }}
             }}
 
-            // Real Video + Audio Recording (MediaRecorder)
-            function ensureActiveCanvasStream() {{
-                if (!canvas) initCanvas();
-                function renderHeartbeat() {{
-                    if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
-                    if (ctx) {{
-                        ctx.save();
-                        ctx.fillStyle = '#ef4444';
-                        ctx.beginPath();
-                        ctx.arc(canvas.width - 30, 30, 8, 0, Math.PI * 2);
-                        ctx.fill();
-                        ctx.restore();
-                    }}
-                    animFrameId = requestAnimationFrame(renderHeartbeat);
-                }}
-                renderHeartbeat();
-
-                try {{
-                    return canvas.captureStream ? canvas.captureStream(30) : null;
-                }} catch (e) {{
-                    console.warn("captureStream error:", e);
-                    return null;
-                }}
-            }}
+            // 100% Strictly Audio-Only Voice Lecture Recorder
+            let audioStream = null;
 
             async function toggleRecording() {{
                 const btn = document.getElementById('rec-toggle-btn');
@@ -2039,84 +2033,37 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 if (mediaRecorder && mediaRecorder.state === 'recording') {{
                     mediaRecorder.stop();
                     if (recTimerInterval) clearInterval(recTimerInterval);
-                    if (animFrameId) cancelAnimationFrame(animFrameId);
-                    btn.innerHTML = "⏺️ Record Class (Video + Voice)";
+                    btn.innerHTML = "🎙️ Record Audio Lecture";
                     btn.className = "topbar-btn rec-btn topbar-full-width";
                     if (statusBar) statusBar.style.display = "none";
-                    showClassroomNotice("Saving Video + Voice class recording...", false);
+                    showClassroomNotice("Saving Audio Lecture...", false);
                     return;
                 }}
 
                 try {{
-                    let videoTrack = null;
-                    let audioTrack = null;
-                    let screenStream = null;
+                    // Strictly microphone voice capture only - zero video/screen capture
+                    audioStream = await navigator.mediaDevices.getUserMedia({{
+                        audio: {{
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            autoGainControl: true
+                        }},
+                        video: false
+                    }});
 
-                    // 1. Try getDisplayMedia on Desktop if available
-                    if (!isMobileDevice() && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {{
-                        try {{
-                            screenStream = await navigator.mediaDevices.getDisplayMedia({{
-                                video: {{ frameRate: {{ ideal: 30 }} }},
-                                audio: true
-                            }});
-                            if (screenStream && screenStream.getVideoTracks().length > 0) {{
-                                videoTrack = screenStream.getVideoTracks()[0];
-                            }}
-                        }} catch (err) {{
-                            console.log("Desktop display capture skipped, using canvas:", err);
-                        }}
-                    }}
-
-                    // 2. If no desktop videoTrack, capture directly from teaching canvas
-                    if (!videoTrack) {{
-                        const panel = document.getElementById('whiteboard-panel');
-                        if (panel && panel.style.display === 'none') {{
-                            panel.style.display = 'flex';
-                        }}
-                        initCanvas();
-                        const canvasStream = ensureActiveCanvasStream();
-                        if (canvasStream && canvasStream.getVideoTracks().length > 0) {{
-                            videoTrack = canvasStream.getVideoTracks()[0];
-                        }}
-                    }}
-
-                    // 3. Capture Teacher microphone audio track
-                    let micStream = null;
-                    try {{
-                        micStream = await navigator.mediaDevices.getUserMedia({{
-                            audio: {{
-                                echoCancellation: true,
-                                noiseSuppression: true,
-                                autoGainControl: true
-                            }}
-                        }});
-                        if (micStream && micStream.getAudioTracks().length > 0) {{
-                            audioTrack = micStream.getAudioTracks()[0];
-                        }}
-                    }} catch (audioErr) {{
-                        console.warn("Microphone access warning:", audioErr);
-                    }}
-
-                    const tracks = [];
-                    if (videoTrack) tracks.push(videoTrack);
-                    if (audioTrack) tracks.push(audioTrack);
-                    if (screenStream && screenStream.getAudioTracks().length > 0) {{
-                        tracks.push(screenStream.getAudioTracks()[0]);
-                    }}
-
-                    if (tracks.length === 0) {{
-                        alert("Could not access microphone or video canvas to record.");
+                    if (!audioStream || audioStream.getAudioTracks().length === 0) {{
+                        alert("Could not access microphone to record audio lecture.");
                         return;
                     }}
 
-                    const combinedStream = new MediaStream(tracks);
-
-                    let mimeType = 'video/webm;codecs=vp8,opus';
+                    let mimeType = 'audio/webm;codecs=opus';
                     if (!MediaRecorder.isTypeSupported(mimeType)) {{
-                        if (MediaRecorder.isTypeSupported('video/webm')) {{
-                            mimeType = 'video/webm';
-                        }} else if (MediaRecorder.isTypeSupported('video/mp4')) {{
-                            mimeType = 'video/mp4';
+                        if (MediaRecorder.isTypeSupported('audio/webm')) {{
+                            mimeType = 'audio/webm';
+                        }} else if (MediaRecorder.isTypeSupported('audio/mp4')) {{
+                            mimeType = 'audio/mp4';
+                        }} else if (MediaRecorder.isTypeSupported('audio/ogg')) {{
+                            mimeType = 'audio/ogg';
                         }} else {{
                             mimeType = '';
                         }}
@@ -2124,7 +2071,7 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
 
                     recordedChunks = [];
                     const options = mimeType ? {{ mimeType }} : {{}};
-                    mediaRecorder = new MediaRecorder(combinedStream, options);
+                    mediaRecorder = new MediaRecorder(audioStream, options);
 
                     mediaRecorder.ondataavailable = function(e) {{
                         if (e.data && e.data.size > 0) {{
@@ -2133,18 +2080,19 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                     }};
 
                     mediaRecorder.onstop = function() {{
-                        combinedStream.getTracks().forEach(t => t.stop());
-                        if (screenStream) screenStream.getTracks().forEach(t => t.stop());
-                        if (micStream) micStream.getTracks().forEach(t => t.stop());
+                        if (audioStream) {{
+                            audioStream.getTracks().forEach(t => t.stop());
+                            audioStream = null;
+                        }}
 
-                        const blob = new Blob(recordedChunks, {{ type: mimeType || 'video/webm' }});
+                        const blob = new Blob(recordedChunks, {{ type: mimeType || 'audio/webm' }});
                         const url = URL.createObjectURL(blob);
                         const a = document.createElement('a');
                         a.style.display = 'none';
                         a.href = url;
                         const now = new Date();
-                        const dateStr = now.toISOString().slice(0,10) + "_" + now.getHours() + "-" + now.getMinutes();
-                        a.download = `Live_Class_Recording_${{dateStr}}.webm`;
+                        const dateStr = now.toISOString().slice(0,10) + "_" + String(now.getHours()).padStart(2, '0') + "-" + String(now.getMinutes()).padStart(2, '0');
+                        a.download = "Sisters_Academy_Audio_Lecture_" + dateStr + ".webm";
                         document.body.appendChild(a);
                         a.click();
                         setTimeout(() => {{
@@ -2152,12 +2100,12 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                             window.URL.revokeObjectURL(url);
                         }}, 100);
 
-                        showClassroomNotice("✅ Class Recording saved! Check your Downloads folder.", false);
+                        showClassroomNotice("✅ Audio Lecture Saved! Upload it below to share with all students.", false);
                     }};
 
                     mediaRecorder.start(1000);
 
-                    btn.innerHTML = "⏹️ Stop Recording (Save Video + Voice)";
+                    btn.innerHTML = "⏹️ Stop & Save Audio";
                     btn.className = "topbar-btn rec-btn-stop topbar-full-width";
                     if (statusBar) statusBar.style.display = "flex";
 
@@ -2168,13 +2116,13 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                         const hrs = String(Math.floor(recSeconds / 3600)).padStart(2, '0');
                         const mins = String(Math.floor((recSeconds % 3600) / 60)).padStart(2, '0');
                         const secs = String(recSeconds % 60).padStart(2, '0');
-                        if (timerElem) timerElem.innerText = `${{hrs}}:${{mins}}:${{secs}}`;
+                        if (timerElem) timerElem.innerText = hrs + ":" + mins + ":" + secs;
                     }}, 1000);
 
-                    showClassroomNotice("⏺️ Recording Video + Audio Active!", false);
+                    showClassroomNotice("🎙️ Audio Lecture Recording Active...", false);
                 }} catch (err) {{
-                    console.error("Recording start error:", err);
-                    alert("Could not start recording: " + err.message);
+                    console.error("Audio recording start error:", err);
+                    alert("Could not start audio recording: " + err.message);
                 }}
             }}
 
