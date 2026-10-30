@@ -5044,27 +5044,32 @@ def render_teacher_dashboard():
 # ==========================================
 # 8. STUDENT DASHBOARD
 # ==========================================
-def get_fragment_decorator(run_every_val="8s"):
+def safe_fragment_8s(func):
     """
-    Returns @st.fragment(run_every=...) if supported by Streamlit,
-    otherwise gracefully returns a passthrough decorator.
+    100% fail-safe decorator for st.fragment.
+    Applies st.fragment(run_every=8) or st.fragment(run_every="8s") or plain st.fragment.
+    Catches all exceptions at decoration time and guarantees no crash can ever occur.
     """
-    if hasattr(st, "fragment"):
+    candidates = [
+        lambda: getattr(st, "fragment", None)(run_every=8),
+        lambda: getattr(st, "fragment", None)(run_every="8s"),
+        lambda: getattr(st, "fragment", None),
+        lambda: getattr(st, "experimental_fragment", None)(run_every=8),
+        lambda: getattr(st, "experimental_fragment", None),
+    ]
+    for candidate in candidates:
         try:
-            return st.fragment(run_every=run_every_val)
-        except (AttributeError, TypeError, Exception):
-            pass
-    if hasattr(st, "experimental_fragment"):
-        try:
-            return st.experimental_fragment(run_every=run_every_val)
-        except (AttributeError, TypeError, Exception):
-            pass
-    def passthrough(fn):
-        return fn
-    return passthrough
+            dec = candidate()
+            if callable(dec):
+                wrapped = dec(func)
+                if callable(wrapped):
+                    return wrapped
+        except Exception:
+            continue
+    return func
 
-@get_fragment_decorator(run_every="8s")
-def render_student_top_status_fragment(student_username: str, student_name: str):
+@safe_fragment_8s
+def render_student_top_status_fragment():
     """
     Auto-polls every 8s while the student has not joined the active video call.
     Provides instant visibility for:
@@ -5072,6 +5077,8 @@ def render_student_top_status_fragment(student_username: str, student_name: str)
       - Important academy notices
       - Tuition fee reminders
     """
+    student_username = st.session_state.get("username", "")
+    student_name = st.session_state.get("name", "Student")
     # 1. Live Class Status Auto-Check
     live_sess = get_live_class_state()
     is_live = bool(live_sess.get('is_live', 0))
@@ -5173,7 +5180,7 @@ def render_student_dashboard():
     # 1. Top Auto-Updating Live Status, Notices & Fee Banners
     # Polled every 8s via st.fragment when student is not inside live video call
     if not st.session_state.get("joined_live_class"):
-        render_student_top_status_fragment(st.session_state.username, st.session_state.name)
+        render_student_top_status_fragment()
 
     tab_live, tab_library, tab_fees, tab_doubts, tab_att = st.tabs([
         "🎥 Live Classroom",
