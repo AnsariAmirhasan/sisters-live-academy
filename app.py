@@ -2793,6 +2793,45 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
 # ==========================================
 # 6. AUTHENTICATION & LOGIN SCREEN
 # ==========================================
+def make_session_token(username: str, pwd_value: str = "") -> str:
+    """Generates a secure token to keep the user logged in across mobile/browser tab reloads."""
+    secret_salt = "sisters_live_academy_persistent_auth_key_v2"
+    payload = f"{username.lower().strip()}:{pwd_value}:{secret_salt}"
+    return hashlib.sha256(payload.encode()).hexdigest()[:24]
+
+def verify_session_token(username_val: str, token_val: str):
+    """
+    Validates persistent session credentials from st.query_params across browser refreshes.
+    Returns user dict if active (is_active != 0) and credentials match token, otherwise None.
+    """
+    if not username_val or not token_val:
+        return None
+    un = username_val.lower().strip()
+    user = None
+
+    if is_supabase_active():
+        ok, rows = supabase_request("GET", "users", params=f"username=eq.{un}&select=*")
+        if ok and rows:
+            user = rows[0]
+
+    if not user:
+        try:
+            with get_db_connection() as conn:
+                c = conn.cursor()
+                c.execute("SELECT * FROM users WHERE username = ?", (un,))
+                r = c.fetchone()
+                if r:
+                    user = dict(r)
+        except Exception as e:
+            logger.warning(f"Failed persistent session verification query: {e}")
+
+    if user and user.get('is_active', 1) != 0:
+        pwd_val = user.get('password_hash') or user.get('password') or ''
+        expected = make_session_token(un, pwd_val)
+        if token_val == expected:
+            return user
+    return None
+
 def handle_login(username_val: str, password_val: str):
     if not username_val or not password_val:
         st.error("Please enter both username and password.")
@@ -2834,6 +2873,14 @@ def handle_login(username_val: str, password_val: str):
             st.session_state.username = user['username']
             st.session_state.role = user['role']
             st.session_state.name = user['full_name']
+            st.session_state.user_id = user.get('id')
+            # Persistent login in browser query params (mobile pull-down refresh safe)
+            try:
+                pwd_val = user.get('password_hash') or user.get('password') or ''
+                st.query_params["u"] = user['username']
+                st.query_params["t"] = make_session_token(user['username'], pwd_val)
+            except Exception as e:
+                logger.warning(f"Failed setting persistent query params: {e}")
             st.success(f"Signed in as {user['full_name']} ({user['role'].capitalize()})!")
             st.rerun()
     else:
@@ -3665,13 +3712,38 @@ def render_live_board_manager(is_teacher: bool = False):
 def render_top_quick_actions_bar():
     """
     Renders a visible, bordered Top Account Bar right at the top of the main screen
-    giving instant 1-tap access to Change Password and Log Out without opening the sidebar.
+    giving instant access to Refresh Dashboard, Change Password, and Log Out without opening the sidebar.
     """
     with st.container(border=True):
-        col1, col2, col3 = st.columns([2, 1, 1], gap="small")
-        with col1:
-            st.markdown(f"**👤 {st.session_state.name}** (`@{st.session_state.username}`)")
-        with col2:
+        role_label = {
+            'admin': '👑 Super Admin',
+            'teacher': '👩‍🏫 Teacher',
+            'student': '🎓 Student'
+        }.get(st.session_state.role, str(st.session_state.role).capitalize())
+        role_color = "#4f46e5" if st.session_state.role == "admin" else ("#059669" if st.session_state.role == "teacher" else "#0284c7")
+
+        st.markdown(f"""
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
+            <div style="font-size: 0.95rem; color: #1e293b;">
+                <b>👤 {st.session_state.name}</b> <span style="color: #64748b; font-size: 0.85rem;">(@{st.session_state.username})</span>
+            </div>
+            <span style="background: {role_color}18; color: {role_color}; border: 1px solid {role_color}44; font-size: 0.78rem; font-weight: 700; padding: 2px 10px; border-radius: 9999px;">
+                {role_label}
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        col_ref, col_pwd, col_out = st.columns([1.2, 1.2, 1], gap="small")
+        with col_ref:
+            if st.button("🔄 Refresh Dashboard", key="top_refresh_dashboard_btn", use_container_width=True, help="Reload live class status, fee dues, notices & schedules without logging out"):
+                try:
+                    st.cache_data.clear()
+                except Exception:
+                    pass
+                st.toast("✅ Dashboard updated!", icon="🔄")
+                st.rerun()
+
+        with col_pwd:
             with st.popover("🔑 Change Password", use_container_width=True):
                 st.markdown(f"**Change Password (@{st.session_state.username})**")
                 with st.form("topbar_pwd_form"):
@@ -3717,11 +3789,21 @@ def render_top_quick_actions_bar():
                                                 "password_hash": new_h
                                             }, params=f"username=eq.{st.session_state.username}")
 
+                                        # Update token in query_params if active
+                                        try:
+                                            st.query_params["t"] = make_session_token(st.session_state.username, new_h)
+                                        except Exception:
+                                            pass
+
                                         st.success("✅ Password updated successfully!")
                             except Exception as e:
                                 st.error(f"Error updating password: {e}")
-        with col3:
+        with col_out:
             if st.button("🚪 Log Out", key="mobile_top_logout", type="primary", use_container_width=True):
+                try:
+                    st.query_params.clear()
+                except Exception:
+                    pass
                 st.session_state.logged_in = False
                 st.session_state.username = None
                 st.session_state.role = None
@@ -4961,20 +5043,60 @@ def render_teacher_dashboard():
 
 # ==========================================
 # 8. STUDENT DASHBOARD
-
 # ==========================================
-def render_student_dashboard():
-    conn = get_db()
-    c = conn.cursor()
+def get_fragment_decorator(run_every_val="8s"):
+    """
+    Returns @st.fragment(run_every=...) if supported by Streamlit,
+    otherwise gracefully returns a passthrough decorator.
+    """
+    if hasattr(st, "fragment"):
+        try:
+            return st.fragment(run_every=run_every_val)
+        except (AttributeError, TypeError, Exception):
+            pass
+    if hasattr(st, "experimental_fragment"):
+        try:
+            return st.experimental_fragment(run_every=run_every_val)
+        except (AttributeError, TypeError, Exception):
+            pass
+    def passthrough(fn):
+        return fn
+    return passthrough
 
-    st.markdown(f"""
-    <div class="hero-banner">
-        <h1>👋 Welcome, {st.session_state.name}!</h1>
-        <p>Sister's Live Academy Student Portal | Roll No: @{st.session_state.username}</p>
-    </div>
-    """, unsafe_allow_html=True)
+@get_fragment_decorator(run_every="8s")
+def render_student_top_status_fragment(student_username: str, student_name: str):
+    """
+    Auto-polls every 8s while the student has not joined the active video call.
+    Provides instant visibility for:
+      - Live class start by teacher (prominent pulsing red alert)
+      - Important academy notices
+      - Tuition fee reminders
+    """
+    # 1. Live Class Status Auto-Check
+    live_sess = get_live_class_state()
+    is_live = bool(live_sess.get('is_live', 0))
+    if is_live:
+        topic = live_sess.get('topic') or "Live Lecture"
+        teacher = live_sess.get('host_teacher') or "Teacher"
+        notes = live_sess.get('teacher_notes') or ""
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%); color: white; padding: 14px 20px; border-radius: 12px; margin-bottom: 14px; box-shadow: 0 6px 20px rgba(220, 38, 38, 0.35); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="font-size: 1.6rem; line-height: 1;">🔴</span>
+                <div>
+                    <div style="font-weight: 800; font-size: 1.05rem; letter-spacing: 0.3px;">LIVE CLASS STARTED RIGHT NOW!</div>
+                    <div style="font-size: 0.92rem; opacity: 0.95; margin-top: 2px;">
+                        <b>{topic}</b> &bull; Conducted by <b>{teacher}</b> {f'— <i>{notes}</i>' if notes else ''}
+                    </div>
+                </div>
+            </div>
+            <div style="background: rgba(255, 255, 255, 0.25); border: 1px solid rgba(255,255,255,0.4); padding: 6px 14px; border-radius: 9999px; font-size: 0.82rem; font-weight: 700; letter-spacing: 0.5px;">
+                🎥 SWITCH TO LIVE CLASSROOM TAB TO JOIN
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # 1. Top Notice Board
+    # 2. Top Notice Board
     notices = []
     if is_supabase_active():
         ok, rows = supabase_request("GET", "announcements", params="order=id.desc&limit=2&select=*")
@@ -4982,8 +5104,13 @@ def render_student_dashboard():
             notices = rows
 
     if not notices:
-        c.execute("SELECT * FROM announcements ORDER BY id DESC LIMIT 2")
-        notices = [dict(r) for r in c.fetchall()]
+        try:
+            with get_db_connection() as conn_n:
+                cn = conn_n.cursor()
+                cn.execute("SELECT * FROM announcements ORDER BY id DESC LIMIT 2")
+                notices = [dict(r) for r in cn.fetchall()]
+        except Exception:
+            pass
 
     if notices:
         for n in notices:
@@ -5003,9 +5130,15 @@ def render_student_dashboard():
             </div>
             """, unsafe_allow_html=True)
 
-    # 2. Fee Dues Notification Banner
-    c.execute("SELECT * FROM fees WHERE student_username = ? AND status = 'Pending' ORDER BY due_date ASC", (st.session_state.username,))
-    pending_fees = [dict(r) for r in c.fetchall()]
+    # 3. Fee Dues Notification Banner
+    try:
+        with get_db_connection() as conn_f:
+            cf = conn_f.cursor()
+            cf.execute("SELECT * FROM fees WHERE student_username = ? AND status = 'Pending' ORDER BY due_date ASC", (student_username,))
+            pending_fees = [dict(r) for r in cf.fetchall()]
+    except Exception:
+        pending_fees = []
+
     if pending_fees:
         total_due_amt = sum(int(str(f['amount']).replace(',', '')) for f in pending_fees if str(f.get('amount', '')).replace(',', '').isdigit())
         due_items = ", ".join([f"{f['month_title']} (₹{f['amount']})" for f in pending_fees[:2]])
@@ -5025,6 +5158,22 @@ def render_student_dashboard():
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+def render_student_dashboard():
+    conn = get_db()
+    c = conn.cursor()
+
+    st.markdown(f"""
+    <div class="hero-banner">
+        <h1>👋 Welcome, {st.session_state.name}!</h1>
+        <p>Sister's Live Academy Student Portal | Roll No: @{st.session_state.username}</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 1. Top Auto-Updating Live Status, Notices & Fee Banners
+    # Polled every 8s via st.fragment when student is not inside live video call
+    if not st.session_state.get("joined_live_class"):
+        render_student_top_status_fragment(st.session_state.username, st.session_state.name)
 
     tab_live, tab_library, tab_fees, tab_doubts, tab_att = st.tabs([
         "🎥 Live Classroom",
@@ -5431,7 +5580,23 @@ def render_student_dashboard():
 
 # ==========================================
 def main():
-    if not st.session_state.logged_in or not st.session_state.username:
+    # 1. Automatic persistent login restoration from st.query_params (pull-down/tab refresh safe)
+    if not st.session_state.get("logged_in") or not st.session_state.get("username"):
+        try:
+            q_user = st.query_params.get("u")
+            q_token = st.query_params.get("t")
+            if q_user and q_token:
+                valid_user = verify_session_token(q_user, q_token)
+                if valid_user:
+                    st.session_state.logged_in = True
+                    st.session_state.username = valid_user['username']
+                    st.session_state.role = valid_user['role']
+                    st.session_state.name = valid_user['full_name']
+                    st.session_state.user_id = valid_user.get('id')
+        except Exception as e:
+            logger.warning(f"Persistent login restoration error: {e}")
+
+    if not st.session_state.get("logged_in") or not st.session_state.get("username"):
         render_login_screen()
         return
 
@@ -5553,6 +5718,12 @@ def main():
                                             "password_hash": new_h
                                         }, params=f"username=eq.{st.session_state.username}")
 
+                                    # Update token in query_params if active
+                                    try:
+                                        st.query_params["t"] = make_session_token(st.session_state.username, new_h)
+                                    except Exception:
+                                        pass
+
                                     st.success("✅ Password updated successfully!")
                         except Exception as e:
                             st.error(f"Error updating password: {e}")
@@ -5560,6 +5731,10 @@ def main():
         st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
         with st.form("logout_form"):
             if st.form_submit_button("🚪 Sign Out", use_container_width=True):
+                try:
+                    st.query_params.clear()
+                except Exception:
+                    pass
                 st.session_state.logged_in = False
                 st.session_state.username = None
                 st.session_state.role = None
