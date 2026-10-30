@@ -1107,9 +1107,14 @@ def init_database():
         title TEXT NOT NULL,
         message TEXT NOT NULL,
         priority TEXT DEFAULT 'Normal',
+        author TEXT DEFAULT 'Teacher',
         created_at TEXT NOT NULL
     )
     """)
+    try:
+        c.execute("ALTER TABLE announcements ADD COLUMN author TEXT DEFAULT 'Teacher'")
+    except Exception:
+        pass
 
     # 6. Doubts
     c.execute("""
@@ -1385,6 +1390,61 @@ def update_payment_settings(upi_id: str, payment_number: str, account_holder_nam
             "custom_instructions": custom_instructions.strip()
         })
     return True, "Payment settings saved successfully!"
+ 
+def get_all_announcements(limit: int = None) -> list[dict]:
+    """
+    Fetches announcements reliably.
+    Prioritizes fresh local SQLite records, seamlessly syncs with Supabase if active,
+    and guarantees newly published notices are visible immediately to all users.
+    """
+    notices_dict = {}
+
+    # 1. Fetch from local SQLite
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            query = "SELECT * FROM announcements ORDER BY id DESC"
+            if limit:
+                query += f" LIMIT {int(limit)}"
+            c.execute(query)
+            for row in c.fetchall():
+                d = dict(row)
+                notices_dict[d['id']] = d
+    except Exception as e:
+        print(f"Error reading SQLite announcements: {e}")
+
+    # 2. Sync / merge from Supabase if active
+    if is_supabase_active():
+        try:
+            params = "order=id.desc&select=*"
+            if limit:
+                params += f"&limit={int(limit)}"
+            ok, rows = supabase_request("GET", "announcements", params=params)
+            if ok and isinstance(rows, list):
+                for r in rows:
+                    if r.get('id') not in notices_dict:
+                        notices_dict[r['id']] = r
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("""
+                                INSERT OR IGNORE INTO announcements (id, title, message, priority, author, created_at)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                                """, (
+                                    r['id'], r.get('title', ''), r.get('message', ''),
+                                    r.get('priority', 'Normal'), r.get('author', 'Teacher'),
+                                    r.get('created_at', '')
+                                ))
+                                conn_w.commit()
+                        except Exception:
+                            pass
+        except Exception as e:
+            print(f"Error fetching Supabase announcements: {e}")
+
+    result = sorted(notices_dict.values(), key=lambda x: x.get('id', 0), reverse=True)
+    if limit:
+        return result[:limit]
+    return result
+
 
 
 # ==========================================
@@ -4356,35 +4416,33 @@ def render_admin_dashboard():
                         st.error("Title and message are required.")
                     else:
                         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        author_name = st.session_state.name or "Academy Administrator"
                         try:
                             with get_db_connection() as conn_w:
                                 conn_w.execute("""
-                                INSERT INTO announcements (title, message, priority, created_at)
-                                VALUES (?, ?, ?, ?)
-                                """, (n_title, n_msg, n_priority, now_str))
+                                INSERT INTO announcements (title, message, priority, author, created_at)
+                                VALUES (?, ?, ?, ?, ?)
+                                """, (n_title, n_msg, n_priority, author_name, now_str))
                                 conn_w.commit()
+                                trigger_cloud_sync(f"Admin published notice: {n_title}")
                         except Exception as e:
                             print(f"Error publishing announcement: {e}")
 
                         if is_supabase_active():
-                            supabase_request("POST", "announcements", {
-                                "title": n_title, "message": n_msg, "priority": n_priority, "created_at": now_str
+                            ok, _ = supabase_request("POST", "announcements", {
+                                "title": n_title, "message": n_msg, "priority": n_priority, "author": author_name, "created_at": now_str
                             })
+                            if not ok:
+                                supabase_request("POST", "announcements", {
+                                    "title": n_title, "message": n_msg, "priority": n_priority, "created_at": now_str
+                                })
 
-                        st.success("Notice posted!")
+                        st.success(f"Notice published by {author_name}!")
                         st.rerun()
 
         with col_n2:
             st.markdown("### 📌 Active Notices")
-            notices = []
-            if is_supabase_active():
-                ok, rows = supabase_request("GET", "announcements", params="order=id.desc&select=*")
-                if ok:
-                    notices = rows
-
-            if not notices:
-                c.execute("SELECT * FROM announcements ORDER BY id DESC")
-                notices = [dict(r) for r in c.fetchall()]
+            notices = get_all_announcements()
 
             if not notices:
                 st.info("No active notices.")
@@ -4399,10 +4457,13 @@ def render_admin_dashboard():
                     <div class="{badge_cls}">
                         <div style="display:flex; justify-content:space-between; align-items:center;">
                             <h4 style="margin:0; color:#1e293b;">{n['title']}</h4>
-                            <span style="font-size:0.8rem; background:#cbd5e1; padding:2px 8px; border-radius:12px; font-weight:600;">{n.get('priority', 'Normal')}</span>
+                            <span style="font-size:0.8rem; background:#cbd5e1; color:#1e293b; padding:2px 8px; border-radius:12px; font-weight:600;">{n.get('priority', 'Normal')}</span>
                         </div>
                         <p style="margin:6px 0 2px 0; color:#475569;">{n['message']}</p>
-                        <small style="color:#94a3b8;">Posted: {n['created_at']}</small>
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px; font-size:0.82rem; color:#64748b;">
+                            <span>👩‍🏫 <b>Posted by:</b> <b style="color:#1e40af;">{n.get('author') or 'Teacher'}</b></span>
+                            <span>🕒 {n['created_at']}</span>
+                        </div>
                     </div>
                     """, unsafe_allow_html=True)
 
@@ -4412,6 +4473,7 @@ def render_admin_dashboard():
                                 with get_db_connection() as conn_w:
                                     conn_w.execute("DELETE FROM announcements WHERE id = ?", (n['id'],))
                                     conn_w.commit()
+                                    trigger_cloud_sync(f"Deleted notice #{n['id']}")
                             except Exception as e:
                                 print(f"Error deleting announcement: {e}")
                             if is_supabase_active():
@@ -4881,35 +4943,33 @@ def render_teacher_dashboard():
                         st.error("Title and message are required.")
                     else:
                         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        author_name = st.session_state.name or "Teacher"
                         try:
                             with get_db_connection() as conn_w:
                                 conn_w.execute("""
-                                INSERT INTO announcements (title, message, priority, created_at)
-                                VALUES (?, ?, ?, ?)
-                                """, (n_title, n_msg, n_priority, now_str))
+                                INSERT INTO announcements (title, message, priority, author, created_at)
+                                VALUES (?, ?, ?, ?, ?)
+                                """, (n_title, n_msg, n_priority, author_name, now_str))
                                 conn_w.commit()
+                                trigger_cloud_sync(f"Teacher {author_name} published notice: {n_title}")
                         except Exception as e:
                             print(f"Error publishing announcement: {e}")
 
                         if is_supabase_active():
-                            supabase_request("POST", "announcements", {
-                                "title": n_title, "message": n_msg, "priority": n_priority, "created_at": now_str
+                            ok, _ = supabase_request("POST", "announcements", {
+                                "title": n_title, "message": n_msg, "priority": n_priority, "author": author_name, "created_at": now_str
                             })
+                            if not ok:
+                                supabase_request("POST", "announcements", {
+                                    "title": n_title, "message": n_msg, "priority": n_priority, "created_at": now_str
+                                })
 
-                        st.success("Notice posted!")
+                        st.success(f"Notice published by {author_name}!")
                         st.rerun()
 
         with col_n2:
             st.markdown("### 📌 Active Notices")
-            notices = []
-            if is_supabase_active():
-                ok, rows = supabase_request("GET", "announcements", params="order=id.desc&select=*")
-                if ok:
-                    notices = rows
-
-            if not notices:
-                c.execute("SELECT * FROM announcements ORDER BY id DESC")
-                notices = [dict(r) for r in c.fetchall()]
+            notices = get_all_announcements()
 
             if not notices:
                 st.info("No active notices.")
@@ -4924,10 +4984,13 @@ def render_teacher_dashboard():
                     <div class="{badge_cls}">
                         <div style="display:flex; justify-content:space-between; align-items:center;">
                             <h4 style="margin:0; color:#1e293b;">{n['title']}</h4>
-                            <span style="font-size:0.8rem; background:#cbd5e1; padding:2px 8px; border-radius:12px; font-weight:600;">{n.get('priority', 'Normal')}</span>
+                            <span style="font-size:0.8rem; background:#cbd5e1; color:#1e293b; padding:2px 8px; border-radius:12px; font-weight:600;">{n.get('priority', 'Normal')}</span>
                         </div>
                         <p style="margin:6px 0 2px 0; color:#475569;">{n['message']}</p>
-                        <small style="color:#94a3b8;">Posted: {n['created_at']}</small>
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px; font-size:0.82rem; color:#64748b;">
+                            <span>👩‍🏫 <b>Posted by:</b> <b style="color:#1e40af;">{n.get('author') or 'Teacher'}</b></span>
+                            <span>🕒 {n['created_at']}</span>
+                        </div>
                     </div>
                     """, unsafe_allow_html=True)
 
@@ -4937,6 +5000,7 @@ def render_teacher_dashboard():
                                 with get_db_connection() as conn_w:
                                     conn_w.execute("DELETE FROM announcements WHERE id = ?", (n['id'],))
                                     conn_w.commit()
+                                    trigger_cloud_sync(f"Deleted notice #{n['id']}")
                             except Exception as e:
                                 print(f"Error deleting announcement: {e}")
                             if is_supabase_active():
@@ -5261,21 +5325,8 @@ def render_student_top_status_fragment():
         </div>
         """, unsafe_allow_html=True)
 
-    # 2. Top Notice Board
-    notices = []
-    if is_supabase_active():
-        ok, rows = supabase_request("GET", "announcements", params="order=id.desc&limit=2&select=*")
-        if ok:
-            notices = rows
-
-    if not notices:
-        try:
-            with get_db_connection() as conn_n:
-                cn = conn_n.cursor()
-                cn.execute("SELECT * FROM announcements ORDER BY id DESC LIMIT 2")
-                notices = [dict(r) for r in cn.fetchall()]
-        except Exception:
-            pass
+    # 2. Top Notice Board (Latest Academy Notices)
+    notices = get_all_announcements(limit=3)
 
     if notices:
         for n in notices:
@@ -5285,13 +5336,19 @@ def render_student_top_status_fragment():
             elif n.get('priority') == 'Exam': badge_cls += " notice-exam"; icon = "📝"
             elif n.get('priority') == 'Holiday': badge_cls += " notice-holiday"; icon = "🏖️"
 
+            author_name = n.get('author') or 'Teacher'
+
             st.markdown(f"""
-            <div class="{badge_cls}">
-                <div style="display:flex; justify-content:space-between;">
-                    <b style="color:#1e293b;">{icon} {n['title']}</b>
-                    <span style="font-size:0.8rem; background:#cbd5e1; padding:2px 8px; border-radius:12px; font-weight:600;">{n.get('priority', 'Normal')}</span>
+            <div class="{badge_cls}" style="margin-bottom:10px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <b style="color:#1e293b; font-size:1.0rem;">{icon} {n['title']}</b>
+                    <span style="font-size:0.8rem; background:#cbd5e1; color:#1e293b; padding:2px 8px; border-radius:12px; font-weight:600;">{n.get('priority', 'Normal')}</span>
                 </div>
-                <p style="margin:4px 0 0 0; color:#475569; font-size:0.95rem;">{n['message']}</p>
+                <p style="margin:6px 0; color:#475569; font-size:0.95rem;">{n['message']}</p>
+                <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.82rem; color:#64748b; margin-top:4px;">
+                    <span>👩‍🏫 <b>Notice by:</b> <b style="color:#1e40af;">{author_name}</b></span>
+                    <span>🕒 {n['created_at']}</span>
+                </div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -5340,10 +5397,11 @@ def render_student_dashboard():
     if not st.session_state.get("joined_live_class"):
         render_student_top_status_fragment()
 
-    tab_live, tab_library, tab_fees, tab_doubts, tab_att = st.tabs([
+    tab_live, tab_library, tab_fees, tab_notices, tab_doubts, tab_att = st.tabs([
         "🎥 Live Classroom",
         "📖 Recorded Lectures & Notes",
         "💳 My Fee Portal",
+        "📢 Notice Board",
         "❓ Ask Doubts & Discussion",
         "📊 My Attendance"
     ])
@@ -5573,6 +5631,40 @@ def render_student_dashboard():
     # ---------------------------------------------
     with tab_fees:
         render_student_fees_portal()
+
+    # ---------------------------------------------
+    # STUDENT TAB 2.8: NOTICE BOARD & ANNOUNCEMENTS
+    # ---------------------------------------------
+    with tab_notices:
+        st.subheader("📢 Academy Notice Board & Announcements")
+        st.caption("Stay up to date with official class notices, exam schedules, and holiday announcements from your teachers.")
+
+        all_std_notices = get_all_announcements()
+        if not all_std_notices:
+            st.info("No announcements posted yet. Official updates will appear here.")
+        else:
+            for n in all_std_notices:
+                badge_cls = "notice-card"
+                icon = "📢"
+                if n.get('priority') == 'Important': badge_cls += " notice-important"; icon = "🚨"
+                elif n.get('priority') == 'Exam': badge_cls += " notice-exam"; icon = "📝"
+                elif n.get('priority') == 'Holiday': badge_cls += " notice-holiday"; icon = "🏖️"
+
+                author_display = n.get('author') or 'Teacher'
+
+                st.markdown(f"""
+                <div class="{badge_cls}" style="margin-bottom:14px; box-shadow:0 4px 12px rgba(0,0,0,0.06);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                        <h4 style="margin:0; color:#1e293b;">{icon} {n['title']}</h4>
+                        <span style="font-size:0.82rem; background:#cbd5e1; color:#1e293b; padding:3px 10px; border-radius:12px; font-weight:700;">{n.get('priority', 'Normal')}</span>
+                    </div>
+                    <p style="margin:10px 0; color:#334155; font-size:1.0rem; line-height:1.6;">{n['message']}</p>
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; font-size:0.85rem; color:#64748b; border-top:1px solid #f1f5f9; padding-top:8px;">
+                        <span>👩‍🏫 <b>Announcement by:</b> <span style="color:#2563eb; font-weight:700;">{author_display}</span></span>
+                        <span>🕒 <b>Posted on:</b> {n['created_at']}</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
     # ---------------------------------------------
     # STUDENT TAB 3: ASK DOUBTS
