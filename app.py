@@ -3384,36 +3384,31 @@ def render_student_fees_portal():
         has_name = bool(pay_cfg.get('account_holder_name', '').strip())
         custom_inst = pay_cfg.get('custom_instructions', '').strip()
 
-        if not has_upi and not has_num and not custom_inst:
-            st.markdown("""
-            <div class="glass-card" style="padding:18px;">
-                <h4 style="margin-top:0; color:#1e293b;">📌 Payment Instructions</h4>
-                <p style="color:#64748b; font-size:0.9rem; margin-bottom:0;">
-                    Payment details have not been configured yet. Please contact your Teacher or Academy Administrator directly for fee payment instructions.
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            upi_li = f"<li><b>UPI ID:</b> <code>{pay_cfg['upi_id']}</code></li>" if has_upi else ""
-            num_li = f"<li><b>Google Pay / PhonePe / Paytm:</b> Send to <code>{pay_cfg['payment_number']}</code></li>" if has_num else ""
-            name_li = f"<li><b>Account / Beneficiary Name:</b> <b>{pay_cfg['account_holder_name']}</b></li>" if has_name else ""
-            notes_div = f"""
-            <div style="background:#e0f2fe; border-left:4px solid #0284c7; padding:10px; border-radius:6px; font-size:0.85rem; color:#0369a1; margin-top:12px;">
-                ℹ️ <b>Important:</b> {custom_inst}
-            </div>
-            """ if custom_inst else ""
+        details_list = []
+        if has_upi:
+            details_list.append(f'<div style="margin-bottom:8px;">💳 <b>UPI ID:</b> <code style="background:#f1f5f9; padding:2px 8px; border-radius:6px; color:#0f172a; font-weight:600;">{pay_cfg["upi_id"]}</code></div>')
+        if has_num:
+            details_list.append(f'<div style="margin-bottom:8px;">📱 <b>GPay / PhonePe / Paytm:</b> <code style="background:#f1f5f9; padding:2px 8px; border-radius:6px; color:#0f172a; font-weight:600;">{pay_cfg["payment_number"]}</code></div>')
+        if has_name:
+            details_list.append(f'<div style="margin-bottom:8px;">👤 <b>Beneficiary Name:</b> <span style="font-weight:600; color:#1e293b;">{pay_cfg["account_holder_name"]}</span></div>')
 
-            st.markdown(f"""
-            <div class="glass-card" style="padding:18px;">
-                <h4 style="margin-top:0; color:#1e293b;">📌 Payment Instructions</h4>
-                <ul style="color:#475569; font-size:0.9rem; padding-left:18px; margin-bottom:12px;">
-                    {upi_li}
-                    {num_li}
-                    {name_li}
-                </ul>
-                {notes_div}
-            </div>
-            """, unsafe_allow_html=True)
+        if not details_list:
+            details_html = '<p style="color:#64748b; font-size:0.9rem; margin-bottom:10px;">Payment account details (UPI / QR) will be configured by your Teacher or Administrator.</p>'
+        else:
+            details_html = f'<div style="color:#475569; font-size:0.9rem; margin-bottom:12px;">{"".join(details_list)}</div>'
+
+        notes_html = ""
+        if custom_inst:
+            notes_html = f'<div style="background:#e0f2fe; border-left:4px solid #0284c7; padding:10px; border-radius:6px; font-size:0.85rem; color:#0369a1; margin-top:12px;">ℹ️ <b>Important:</b> {custom_inst}</div>'
+
+        card_html = (
+            '<div class="glass-card" style="padding:18px;">'
+            '<h4 style="margin-top:0; color:#1e293b;">📌 Payment Instructions</h4>'
+            f'{details_html}'
+            f'{notes_html}'
+            '</div>'
+        )
+        st.markdown(card_html, unsafe_allow_html=True)
 
 
 # ==========================================
