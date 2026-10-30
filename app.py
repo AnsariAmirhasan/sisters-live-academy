@@ -845,10 +845,11 @@ def get_live_class_state() -> dict:
     return sess
 
 
-def auto_log_student_attendance(student_username: str, student_name: str, room_name: str, topic: str = "Live Class") -> bool:
+def auto_log_student_attendance(student_username: str, student_name: str, room_name: str, topic: str = "Live Class", teacher_name: str = "") -> bool:
     """
     100% fail-safe attendance logger.
     Automatically logs attendance for a student immediately when the live class is active.
+    Records the specific teacher who conducted the lecture.
     Prevents duplicate entries for the same student on the same date and room.
     """
     if not student_username or not room_name:
@@ -857,6 +858,12 @@ def auto_log_student_attendance(student_username: str, student_name: str, room_n
     fn = str(student_name).strip() if student_name else un
     rm = str(room_name).strip()
     tp = str(topic).strip() if topic else "Urdu & Arabic Live Class"
+    t_name = str(teacher_name).strip() if teacher_name else ""
+    if not t_name:
+        try:
+            t_name = get_live_class_state().get('host_teacher') or "Teacher"
+        except Exception:
+            t_name = "Teacher"
     today_str = str(datetime.date.today())
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -868,9 +875,9 @@ def auto_log_student_attendance(student_username: str, student_name: str, room_n
             """, (un, today_str, rm))
             if not c.fetchone():
                 c.execute("""
-                INSERT INTO attendance (student_username, student_name, room_name, topic, join_timestamp, date)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """, (un, fn, rm, tp, now_str, today_str))
+                INSERT INTO attendance (student_username, student_name, room_name, topic, teacher_name, join_timestamp, date)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (un, fn, rm, tp, t_name, now_str, today_str))
                 conn.commit()
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
 
@@ -880,14 +887,24 @@ def auto_log_student_attendance(student_username: str, student_name: str, room_n
                 params=f"student_username=eq.{un}&date=eq.{today_str}&room_name=eq.{rm}&select=id"
             )
             if ok and not rows:
-                supabase_request("POST", "attendance", {
+                ok_p, _ = supabase_request("POST", "attendance", {
                     "student_username": un,
                     "student_name": fn,
                     "room_name": rm,
                     "topic": tp,
+                    "teacher_name": t_name,
                     "join_timestamp": now_str,
                     "date": today_str
                 })
+                if not ok_p:
+                    supabase_request("POST", "attendance", {
+                        "student_username": un,
+                        "student_name": fn,
+                        "room_name": rm,
+                        "topic": tp,
+                        "join_timestamp": now_str,
+                        "date": today_str
+                    })
         return True
     except Exception as e:
         logger.warning(f"auto_log_student_attendance error: {e}")
@@ -932,9 +949,9 @@ def start_live_class(topic: str, subject: str = "Urdu / Arabic", jitsi_server: s
                 c_att.execute("SELECT id FROM attendance WHERE LOWER(student_username) = ? AND date = ? AND room_name = ?", (s_un, today_str, t_room))
                 if not c_att.fetchone():
                     c_att.execute("""
-                    INSERT INTO attendance (student_username, student_name, room_name, topic, join_timestamp, date)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """, (s_un, s_fn, t_room, t_topic, now_str, today_str))
+                    INSERT INTO attendance (student_username, student_name, room_name, topic, teacher_name, join_timestamp, date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (s_un, s_fn, t_room, t_topic, h_name, now_str, today_str))
 
             conn.commit()
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
@@ -1060,6 +1077,7 @@ def init_database():
         student_name TEXT NOT NULL,
         room_name TEXT NOT NULL,
         topic TEXT,
+        teacher_name TEXT DEFAULT 'Teacher',
         join_timestamp TEXT NOT NULL,
         date TEXT NOT NULL
     )
@@ -1077,6 +1095,8 @@ def init_database():
             c.execute("ALTER TABLE attendance ADD COLUMN room_name TEXT DEFAULT ''")
         if 'topic' not in att_cols:
             c.execute("ALTER TABLE attendance ADD COLUMN topic TEXT DEFAULT ''")
+        if 'teacher_name' not in att_cols:
+            c.execute("ALTER TABLE attendance ADD COLUMN teacher_name TEXT DEFAULT 'Teacher'")
         if 'join_timestamp' not in att_cols:
             c.execute("ALTER TABLE attendance ADD COLUMN join_timestamp TEXT DEFAULT ''")
         if 'date' not in att_cols:
@@ -4645,16 +4665,27 @@ def render_admin_dashboard():
                 records_data = rows
 
         if not records_data:
-            c.execute("SELECT id, student_name, student_username, room_name, topic, join_timestamp, date FROM attendance ORDER BY id DESC")
+            c.execute("SELECT id, student_name, student_username, teacher_name, room_name, topic, join_timestamp, date FROM attendance ORDER BY id DESC")
             records_data = [dict(r) for r in c.fetchall()]
 
         if not records_data:
             st.info("No attendance entries logged yet.")
         else:
-            st.dataframe(records_data, use_container_width=True, hide_index=True)
+            display_admin = []
+            for r in records_data:
+                display_admin.append({
+                    "Date": r.get('date', '-'),
+                    "Student Name": r.get('student_name', '-'),
+                    "Username": r.get('student_username', '-'),
+                    "Conducted by Teacher": f"👩‍🏫 {r.get('teacher_name') or 'Teacher'}",
+                    "Lecture Topic": r.get('topic', '-'),
+                    "Join Time": r.get('join_timestamp', '-'),
+                    "Room": r.get('room_name', '-')
+                })
+            st.dataframe(display_admin, use_container_width=True, hide_index=True)
 
             csv_output = io.StringIO()
-            csv_writer = csv.DictWriter(csv_output, fieldnames=['id', 'student_name', 'student_username', 'room_name', 'topic', 'join_timestamp', 'date'])
+            csv_writer = csv.DictWriter(csv_output, fieldnames=['id', 'student_name', 'student_username', 'teacher_name', 'room_name', 'topic', 'join_timestamp', 'date'], extrasaction='ignore')
             csv_writer.writeheader()
             csv_writer.writerows(records_data)
 
@@ -5274,7 +5305,7 @@ def render_teacher_dashboard():
                     records_data = rows
 
             if not records_data:
-                c.execute("SELECT id, student_name, student_username, room_name, topic, join_timestamp, date FROM attendance ORDER BY id DESC")
+                c.execute("SELECT id, student_name, student_username, teacher_name, room_name, topic, join_timestamp, date FROM attendance ORDER BY id DESC")
                 records_data = [dict(r) for r in c.fetchall()]
 
             today_str = str(datetime.date.today())
@@ -5293,10 +5324,21 @@ def render_teacher_dashboard():
             if not records_data:
                 st.info("No attendance entries logged yet. Students are logged automatically the moment the teacher goes live.")
             else:
-                st.dataframe(records_data, use_container_width=True, hide_index=True)
+                display_teacher_att = []
+                for r in records_data:
+                    display_teacher_att.append({
+                        "Date": r.get('date', '-'),
+                        "Student Name": r.get('student_name', '-'),
+                        "Username": r.get('student_username', '-'),
+                        "Conducted by Teacher": f"👩‍🏫 {r.get('teacher_name') or 'Teacher'}",
+                        "Topic": r.get('topic', '-'),
+                        "Time": r.get('join_timestamp', '-'),
+                        "Room": r.get('room_name', '-')
+                    })
+                st.dataframe(display_teacher_att, use_container_width=True, hide_index=True)
 
                 csv_output = io.StringIO()
-                csv_writer = csv.DictWriter(csv_output, fieldnames=['id', 'student_name', 'student_username', 'room_name', 'topic', 'join_timestamp', 'date'])
+                csv_writer = csv.DictWriter(csv_output, fieldnames=['id', 'student_name', 'student_username', 'teacher_name', 'room_name', 'topic', 'join_timestamp', 'date'], extrasaction='ignore')
                 csv_writer.writeheader()
                 csv_writer.writerows(records_data)
 
@@ -5482,7 +5524,7 @@ def render_student_top_status_fragment():
 
         # Auto-log student attendance the moment teacher is live!
         if student_username:
-            auto_log_student_attendance(student_username, student_name, room_name, topic)
+            auto_log_student_attendance(student_username, student_name, room_name, topic, teacher_name=teacher)
 
         st.markdown(f"""
         <div style="background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%); color: white; padding: 14px 20px; border-radius: 12px; margin-bottom: 14px; box-shadow: 0 6px 20px rgba(220, 38, 38, 0.35); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
@@ -5725,7 +5767,7 @@ def render_student_dashboard():
             """, unsafe_allow_html=True)
 
             # Immediately auto-mark student attendance as teacher is live!
-            auto_log_student_attendance(st.session_state.username, st.session_state.name, room_name, session_topic)
+            auto_log_student_attendance(st.session_state.username, st.session_state.name, room_name, session_topic, teacher_name=host_teacher)
 
             st.markdown(f"""
             <div style="background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border: 1.5px solid #86efac; border-radius: 10px; padding: 10px 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
@@ -5953,21 +5995,41 @@ def render_student_dashboard():
     # ---------------------------------------------
     with tab_att:
         st.subheader("📊 My Class Attendance")
+        st.caption("Aapne jin teachers ke live lectures attend kiye hain unki mukammal attendance details yahan darj hain.")
         my_logs = []
         if is_supabase_active():
             ok, rows = supabase_request("GET", "attendance", params=f"student_username=eq.{st.session_state.username}&order=id.desc&select=*")
-            if ok:
+            if ok and rows:
                 my_logs = rows
 
         if not my_logs:
-            c.execute("SELECT date, join_timestamp, topic, room_name FROM attendance WHERE student_username = ? ORDER BY id DESC", (st.session_state.username,))
+            c.execute("SELECT date, join_timestamp, topic, teacher_name, room_name FROM attendance WHERE student_username = ? ORDER BY id DESC", (st.session_state.username,))
             my_logs = [dict(r) for r in c.fetchall()]
 
         if not my_logs:
-            st.info("No attendance recorded yet. Click 'Join Live Class' when the teacher is live to log your attendance.")
+            st.info("No attendance recorded yet. When your teacher goes live, your attendance is automatically logged with the teacher's name.")
         else:
-            st.write(f"**Total Live Classes Attended:** {len(my_logs)}")
-            st.dataframe(my_logs, use_container_width=True, hide_index=True)
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border: 1.5px solid #86efac; border-radius: 10px; padding: 12px 18px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <div>
+                    <b style="color: #166534; font-size: 1.0rem;">✅ Total Live Classes Attended: {len(my_logs)}</b>
+                    <div style="color: #15803d; font-size: 0.88rem; margin-top: 2px;">Har class ki attendance teacher ke naam ke sath automatically record hoti hai.</div>
+                </div>
+                <span style="font-size: 0.8rem; background: #16a34a; color: white; padding: 4px 14px; border-radius: 9999px; font-weight: 700;">VERIFIED ATTENDANCE</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+            display_logs = []
+            for r in my_logs:
+                t_conducted = r.get('teacher_name') or 'Teacher'
+                display_logs.append({
+                    "Date": r.get('date', '-'),
+                    "Conducted by Teacher": f"👩‍🏫 {t_conducted}",
+                    "Lecture Topic": r.get('topic') or "Live Lecture",
+                    "Join Time": r.get('join_timestamp', '-'),
+                    "Attendance Status": "✅ Present (Attended)"
+                })
+            st.dataframe(display_logs, use_container_width=True, hide_index=True)
 
     # Close connection cleanly
     try:
