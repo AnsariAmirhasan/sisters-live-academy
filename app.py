@@ -1577,14 +1577,14 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
 
     if is_teacher:
         tb_buttons = json.dumps([
-            'microphone', 'camera', 'chat', 'raisehand', 'tileview', 'hangup'
+            'microphone', 'camera', 'desktop', 'whiteboard', 'chat', 'raisehand', 'tileview', 'hangup'
         ])
         student_restrictions_js = ""
     else:
         # Strict student security: No hangup button (prevents 'End meeting for all' popup),
         # no security/mute-everyone/livestreaming/desktop
         tb_buttons = json.dumps([
-            'microphone', 'camera', 'chat', 'raisehand', 'tileview'
+            'microphone', 'camera', 'whiteboard', 'chat', 'raisehand', 'tileview'
         ])
         student_restrictions_js = """,
                             disableRemoteMute: true,
@@ -1598,9 +1598,9 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
         topbar_html = """
         <div class="classroom-topbar">
             <button id="fs-toggle-btn" class="topbar-btn fs-btn" onclick="toggleFullScreen()">⛶ Full Screen</button>
-            <button id="whiteboard-btn" class="topbar-btn wb-btn" onclick="toggleWhiteboard()">✏️ Whiteboard</button>
+            <button id="whiteboard-btn" class="topbar-btn wb-btn" onclick="toggleWhiteboard()">✏️ Live Whiteboard</button>
             <button id="cam-toggle-btn" class="topbar-btn cam-btn" onclick="switchCamera()">📷 Camera Flip</button>
-            <button id="share-screen-btn" class="topbar-btn share-btn" onclick="handleScreenShare()">📖 Share Book / Screen</button>
+            <button id="share-screen-btn" class="topbar-btn share-btn" onclick="handleScreenShare()">🖥️ Share Screen / Book</button>
             <button id="rec-toggle-btn" class="topbar-btn rec-btn topbar-full-width" onclick="toggleRecording()">🎙️ Record Audio Lecture</button>
         </div>
         <div id="classroom-notice-toast" style="display:none; padding:6px 10px; margin:4px 8px; border-radius:6px; font-size:0.8rem; color:white; font-weight:600; text-align:center;"></div>
@@ -1612,50 +1612,77 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
         """
     else:
         topbar_html = """
-        <div class="classroom-topbar" style="display:flex; justify-content:space-between; align-items:center;">
+        <div class="classroom-topbar" style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
             <button id="fs-toggle-btn" class="topbar-btn fs-btn" onclick="toggleFullScreen()">⛶ Full Screen</button>
+            <button id="student-wb-btn" class="topbar-btn wb-btn" onclick="toggleWhiteboard()">✏️ Teacher's Board <span id="wb-status-tag" style="background:#059669; color:white; border-radius:4px; padding:1px 5px; font-size:11px; margin-left:4px;">LIVE</span></button>
             <button id="raise-hand-btn" class="topbar-btn" style="background:#0284c7; color:white;" onclick="toggleRaiseHand()">✋ Raise Hand</button>
-            <span style="color:#94a3b8; font-size:0.82rem; font-weight:500;">🎥 Live Audio & Video Classroom</span>
         </div>
         <div id="classroom-notice-toast" style="display:none; padding:6px 10px; margin:4px 8px; border-radius:6px; font-size:0.8rem; color:white; font-weight:600; text-align:center;"></div>
         """
 
-    whiteboard_html = """
-    <!-- Built-in HTML5 Interactive Teaching Whiteboard & Lesson Presenter -->
-    <input type="file" id="board-image-loader" accept="image/*" style="display:none;" onchange="loadBookImageToCanvas(event)">
-    <div id="whiteboard-panel" style="display:none;">
-        <div class="wb-toolbar">
-            <div class="wb-group">
-                <span style="font-size:0.75rem; font-weight:700; color:#94a3b8;">Pen:</span>
-                <button type="button" class="wb-color-btn active" style="background:#ffffff;" onclick="setPenColor('#ffffff', this)"></button>
-                <button type="button" class="wb-color-btn" style="background:#facc15;" onclick="setPenColor('#facc15', this)"></button>
-                <button type="button" class="wb-color-btn" style="background:#ef4444;" onclick="setPenColor('#ef4444', this)"></button>
-                <button type="button" class="wb-color-btn" style="background:#22c55e;" onclick="setPenColor('#22c55e', this)"></button>
-                <button type="button" id="eraser-btn" class="wb-tool-btn" onclick="toggleEraser()">🧹 Eraser</button>
+    if is_teacher:
+        whiteboard_html = """
+        <!-- Built-in HTML5 Interactive Teaching Whiteboard & Lesson Presenter (Teacher Mode) -->
+        <input type="file" id="board-image-loader" accept="image/*" style="display:none;" onchange="loadBookImageToCanvas(event)">
+        <div id="whiteboard-panel" style="display:none;">
+            <div class="wb-toolbar">
+                <div class="wb-group">
+                    <span style="font-size:0.75rem; font-weight:700; color:#94a3b8;">Pen:</span>
+                    <button type="button" class="wb-color-btn active" style="background:#ffffff;" onclick="setPenColor('#ffffff', this)"></button>
+                    <button type="button" class="wb-color-btn" style="background:#facc15;" onclick="setPenColor('#facc15', this)"></button>
+                    <button type="button" class="wb-color-btn" style="background:#ef4444;" onclick="setPenColor('#ef4444', this)"></button>
+                    <button type="button" class="wb-color-btn" style="background:#22c55e;" onclick="setPenColor('#22c55e', this)"></button>
+                    <button type="button" class="wb-color-btn" style="background:#38bdf8;" onclick="setPenColor('#38bdf8', this)"></button>
+                    <button type="button" id="eraser-btn" class="wb-tool-btn" onclick="toggleEraser()">🧹 Eraser</button>
+                </div>
+                <div class="wb-group">
+                    <span style="font-size:0.75rem; font-weight:700; color:#94a3b8;">Size:</span>
+                    <button type="button" class="wb-tool-btn" onclick="setLineWidth(3, this)">Thin</button>
+                    <button type="button" class="wb-tool-btn active" onclick="setLineWidth(6, this)">Med</button>
+                    <button type="button" class="wb-tool-btn" onclick="setLineWidth(14, this)">Thick</button>
+                </div>
+                <div class="wb-group">
+                    <button type="button" class="wb-tool-btn" style="background:#2563eb; color:white;" onclick="triggerBookImagePicker()">📖 Load Book Page</button>
+                    <button type="button" class="wb-tool-btn" style="background:#475569; color:white;" onclick="clearCanvasDrawing()">🗑️ Clear</button>
+                    <button type="button" class="wb-tool-btn" style="background:#059669; color:white;" onclick="forceSyncCanvasToAll()">📤 Sync to Students</button>
+                    <button type="button" class="wb-tool-btn" style="background:#dc2626; color:white;" onclick="toggleWhiteboard()">✖️ Close</button>
+                </div>
+                <div class="wb-group wb-layout-group">
+                    <span style="font-size:0.72rem; color:#94a3b8;">View:</span>
+                    <button type="button" class="wb-tool-btn active" onclick="setLayoutMode('split', this)">🌓 Split</button>
+                    <button type="button" class="wb-tool-btn" onclick="setLayoutMode('board', this)">📐 Board</button>
+                    <button type="button" class="wb-tool-btn" onclick="setLayoutMode('video', this)">📹 Video</button>
+                </div>
             </div>
-            <div class="wb-group">
-                <span style="font-size:0.75rem; font-weight:700; color:#94a3b8;">Size:</span>
-                <button type="button" class="wb-tool-btn" onclick="setLineWidth(3, this)">Thin</button>
-                <button type="button" class="wb-tool-btn active" onclick="setLineWidth(6, this)">Med</button>
-                <button type="button" class="wb-tool-btn" onclick="setLineWidth(14, this)">Thick</button>
-            </div>
-            <div class="wb-group">
-                <button type="button" class="wb-tool-btn" style="background:#2563eb; color:white;" onclick="triggerBookImagePicker()">📖 Load Book Page</button>
-                <button type="button" class="wb-tool-btn" style="background:#475569; color:white;" onclick="clearCanvasDrawing()">🗑️ Clear</button>
-                <button type="button" class="wb-tool-btn" style="background:#dc2626; color:white;" onclick="toggleWhiteboard()">✖️ Close</button>
+            <div class="wb-canvas-container" id="wb-canvas-box">
+                <canvas id="teaching-canvas" width="1280" height="720"></canvas>
             </div>
         </div>
-        <div class="wb-canvas-container">
-            <canvas id="teaching-canvas" width="1280" height="720"></canvas>
+        """
+    else:
+        whiteboard_html = """
+        <!-- Built-in HTML5 Interactive Teaching Whiteboard & Lesson Presenter (Student Live Viewer Mode) -->
+        <div id="whiteboard-panel" style="display:none;">
+            <div class="wb-toolbar" style="justify-content:space-between;">
+                <div class="wb-group">
+                    <span style="color:#38bdf8; font-weight:700; font-size:0.82rem;">🔴 Teacher's Live Whiteboard & Book Page</span>
+                    <span id="student-wb-status" style="background:#059669; color:white; border-radius:4px; padding:2px 6px; font-size:0.72rem; font-weight:600;">● Live Synced</span>
+                </div>
+                <div class="wb-group wb-layout-group">
+                    <button type="button" class="wb-tool-btn" style="background:#0284c7; color:white;" onclick="requestWbSync()">🔄 Re-Sync</button>
+                    <button type="button" class="wb-tool-btn active" onclick="setLayoutMode('split', this)">🌓 Split</button>
+                    <button type="button" class="wb-tool-btn" onclick="setLayoutMode('board', this)">📐 Board</button>
+                    <button type="button" class="wb-tool-btn" onclick="setLayoutMode('video', this)">📹 Video</button>
+                    <button type="button" class="wb-tool-btn" style="background:#dc2626; color:white;" onclick="toggleWhiteboard()">✖️ Hide</button>
+                </div>
+            </div>
+            <div class="wb-canvas-container" id="wb-canvas-box">
+                <canvas id="teaching-canvas" width="1280" height="720"></canvas>
+            </div>
         </div>
-    </div>
-    """ if is_teacher else """
-    <div style="display:none;">
-        <canvas id="teaching-canvas" width="1280" height="720"></canvas>
-    </div>
-    """
+        """
 
-    component_height = 660 if is_teacher else 585
+    component_height = 680 if is_teacher else 640
 
     html_code = f"""
     <!DOCTYPE html>
@@ -1796,18 +1823,18 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 padding: 8px 10px;
                 display: flex;
                 align-items: center;
-                gap: 10px;
+                gap: 8px;
                 flex-wrap: wrap;
                 border-bottom: 1px solid #1e293b;
             }}
             .wb-group {{
                 display: inline-flex;
                 align-items: center;
-                gap: 6px;
+                gap: 5px;
             }}
             .wb-color-btn {{
-                width: 24px;
-                height: 24px;
+                width: 22px;
+                height: 22px;
                 border-radius: 50%;
                 border: 2px solid #64748b;
                 cursor: pointer;
@@ -1823,9 +1850,9 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 background: #1e293b;
                 color: #e2e8f0;
                 border: 1px solid #334155;
-                padding: 6px 10px;
+                padding: 5px 9px;
                 border-radius: 6px;
-                font-size: 0.78rem;
+                font-size: 0.76rem;
                 font-weight: 600;
                 cursor: pointer;
             }}
@@ -1836,11 +1863,12 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             }}
             .wb-canvas-container {{
                 width: 100%;
-                height: 380px;
+                height: 280px;
                 position: relative;
                 background: #020617;
                 overflow: hidden;
                 touch-action: none;
+                transition: height 0.25s ease;
             }}
             #teaching-canvas {{
                 width: 100%;
@@ -1850,30 +1878,19 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 cursor: crosshair;
             }}
 
-            /* Jitsi Video Container - Explicit 520px non-collapsing height */
+            /* Jitsi Video Container */
             #jitsi-container {{
                 width: 100% !important;
                 height: 520px !important;
-                min-height: 520px !important;
-                flex: 0 0 520px !important;
-                flex-shrink: 0 !important;
+                min-height: 260px !important;
+                flex: 1 1 auto !important;
                 background: #111827;
-                transition: height 0.3s ease;
+                transition: height 0.25s ease;
                 display: block;
-            }}
-            @media (max-width: 768px) {{
-                #jitsi-container {{
-                    width: 100% !important;
-                    height: 520px !important;
-                    min-height: 520px !important;
-                    flex: 0 0 520px !important;
-                    flex-shrink: 0 !important;
-                }}
             }}
             #classroom-master-wrapper.is-fullscreen #jitsi-container {{
                 height: calc(100vh - 60px) !important;
                 min-height: calc(100vh - 60px) !important;
-                flex: 1 1 auto !important;
             }}
             #jitsi-container iframe {{
                 width: 100% !important;
@@ -1894,6 +1911,7 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
         <script>
             let api = null;
             let isFullscreenMode = false;
+            const isTeacherRole = {'true' if is_teacher else 'false'};
 
             // Canvas & Whiteboard state
             let canvas = null;
@@ -1903,13 +1921,15 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             let currentLineWidth = 6;
             let isEraser = false;
             let loadedBookImage = null;
+            let lastPos = {{ x: 0, y: 0 }};
+            let snapDebounceTimer = null;
+            let currentLayout = 'split';
 
             // MediaRecorder state
             let mediaRecorder = null;
             let recordedChunks = [];
             let recTimerInterval = null;
             let recSeconds = 0;
-            let animFrameId = null;
 
             function isMobileDevice() {{
                 return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || (window.innerWidth <= 768);
@@ -1940,7 +1960,7 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 }}
             }}
 
-            // Clean Fullscreen Toggle via Top-Left Toolbar Button
+            // Clean Fullscreen Toggle
             function toggleFullScreen() {{
                 const master = document.getElementById('classroom-master-wrapper');
                 const topFsBtn = document.getElementById('fs-toggle-btn');
@@ -1971,11 +1991,6 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                             window.frameElement.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
                         }} catch (err) {{}}
                     }}
-                    if (jitsiCont) {{
-                        jitsiCont.style.setProperty('height', 'calc(100vh - 60px)', 'important');
-                        jitsiCont.style.setProperty('min-height', 'calc(100vh - 60px)', 'important');
-                        jitsiCont.style.setProperty('flex', '1 1 auto', 'important');
-                    }}
                 }} else {{
                     try {{
                         if (document.fullscreenElement || document.webkitFullscreenElement) {{
@@ -1997,11 +2012,6 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                     if (window.frameElement) {{
                         window.frameElement.style.height = "{component_height}px";
                     }}
-                    if (jitsiCont) {{
-                        jitsiCont.style.setProperty('height', '520px', 'important');
-                        jitsiCont.style.setProperty('min-height', '520px', 'important');
-                        jitsiCont.style.setProperty('flex', '0 0 520px', 'important');
-                    }}
                 }}
             }}
 
@@ -2016,12 +2026,12 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 }}
             }});
 
-            // Camera Flip
+            // Camera Flip (Front ⇄ Back for showing book to students)
             function switchCamera() {{
                 if (api) {{
                     try {{
                         api.executeCommand('toggleCamera');
-                        showClassroomNotice("📷 Switched Camera (Front ⇄ Back) to show Book / Notes to students!", false);
+                        showClassroomNotice("📷 Camera Flipped (Front ⇄ Back) to display Book / Notes to students!", false);
                     }} catch (e) {{
                         console.error("Camera switch error:", e);
                         try {{ api.executeCommand('toggleVideo'); }} catch(err) {{}}
@@ -2030,7 +2040,161 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 }}
             }}
 
-            // Whiteboard & Canvas Implementation
+            // Whiteboard Layout Switcher (Split / Board Only / Video Only)
+            function setLayoutMode(mode, btn) {{
+                currentLayout = mode;
+                const wbBox = document.getElementById('wb-canvas-box');
+                const jitsiCont = document.getElementById('jitsi-container');
+                const panel = document.getElementById('whiteboard-panel');
+
+                document.querySelectorAll('.wb-layout-group .wb-tool-btn').forEach(b => b.classList.remove('active'));
+                if (btn) btn.classList.add('active');
+
+                if (mode === 'split') {{
+                    if (panel) panel.style.display = 'flex';
+                    if (wbBox) wbBox.style.height = '280px';
+                    if (jitsiCont) {{
+                        jitsiCont.style.setProperty('height', '280px', 'important');
+                        jitsiCont.style.setProperty('min-height', '280px', 'important');
+                    }}
+                }} else if (mode === 'board') {{
+                    if (panel) panel.style.display = 'flex';
+                    if (wbBox) wbBox.style.height = '430px';
+                    if (jitsiCont) {{
+                        jitsiCont.style.setProperty('height', '150px', 'important');
+                        jitsiCont.style.setProperty('min-height', '150px', 'important');
+                    }}
+                }} else if (mode === 'video') {{
+                    if (wbBox) wbBox.style.height = '0px';
+                    if (panel) panel.style.display = 'none';
+                    if (jitsiCont) {{
+                        jitsiCont.style.setProperty('height', '520px', 'important');
+                        jitsiCont.style.setProperty('min-height', '520px', 'important');
+                    }}
+                }}
+                if (canvas && ctx) redrawCanvas();
+            }}
+
+            // Real-Time Whiteboard Broadcast & Messaging System
+            const wbChannel = ('BroadcastChannel' in window) ? new BroadcastChannel('sisters_wb_sync_ch') : null;
+            if (wbChannel) {{
+                wbChannel.onmessage = function(e) {{
+                    if (e && e.data) handleIncomingWbMessage(e.data);
+                }};
+            }}
+
+            function broadcastWbMessage(payload) {{
+                if (wbChannel) {{
+                    try {{ wbChannel.postMessage(payload); }} catch(err) {{}}
+                }}
+                if (api) {{
+                    try {{
+                        api.executeCommand('sendEndpointTextMessage', '', JSON.stringify(payload));
+                    }} catch (err) {{
+                        console.log("Jitsi broadcast error:", err);
+                    }}
+                }}
+            }}
+
+            function handleIncomingWbMessage(msg) {{
+                if (!msg || !msg.t) return;
+
+                const panel = document.getElementById('whiteboard-panel');
+                const statusTag = document.getElementById('wb-status-tag');
+                const studentStatus = document.getElementById('student-wb-status');
+
+                if (!isTeacherRole) {{
+                    if (statusTag) {{
+                        statusTag.innerText = "🔴 LIVE DRAWING";
+                        statusTag.style.background = "#ef4444";
+                    }}
+                    if (studentStatus) {{
+                        studentStatus.innerText = "● Teacher Drawing";
+                        studentStatus.style.background = "#ef4444";
+                    }}
+
+                    // Auto-open whiteboard if teacher starts drawing or loads a book page
+                    if ((msg.t === 'm' || msg.t === 'snap' || (msg.t === 'toggle' && msg.open)) && panel) {{
+                        if (panel.style.display === 'none') {{
+                            panel.style.display = 'flex';
+                            setLayoutMode('split', null);
+                            initCanvas();
+                        }}
+                    }}
+                }}
+
+                if (msg.t === 'toggle') {{
+                    if (!isTeacherRole && panel) {{
+                        if (msg.open) {{
+                            panel.style.display = 'flex';
+                            setLayoutMode('split', null);
+                            initCanvas();
+                        }} else {{
+                            panel.style.display = 'none';
+                            setLayoutMode('video', null);
+                        }}
+                    }}
+                }} else if (msg.t === 'm') {{
+                    if (!ctx) initCanvas();
+                    if (ctx) {{
+                        ctx.beginPath();
+                        ctx.moveTo(msg.x0, msg.y0);
+                        ctx.lineTo(msg.x1, msg.y1);
+                        ctx.strokeStyle = msg.c;
+                        ctx.lineWidth = msg.w;
+                        ctx.lineCap = 'round';
+                        ctx.lineJoin = 'round';
+                        ctx.stroke();
+                    }}
+                }} else if (msg.t === 'clear') {{
+                    loadedBookImage = null;
+                    redrawCanvas();
+                    if (studentStatus) {{
+                        studentStatus.innerText = "● Board Cleared";
+                        studentStatus.style.background = "#64748b";
+                    }}
+                }} else if (msg.t === 'snap') {{
+                    if (msg.img) {{
+                        const img = new Image();
+                        img.onload = function() {{
+                            if (!ctx) initCanvas();
+                            if (ctx && canvas) {{
+                                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                            }}
+                            if (studentStatus) {{
+                                studentStatus.innerText = "● Live Synced";
+                                studentStatus.style.background = "#059669";
+                            }}
+                        }};
+                        img.src = msg.img;
+                    }}
+                }} else if (msg.t === 'req_sync') {{
+                    if (isTeacherRole && canvas) {{
+                        try {{
+                            const snap = canvas.toDataURL('image/jpeg', 0.5);
+                            broadcastWbMessage({{ t: 'snap', img: snap }});
+                        }} catch(e) {{}}
+                    }}
+                }}
+            }}
+
+            function forceSyncCanvasToAll() {{
+                if (!canvas) return;
+                try {{
+                    const snap = canvas.toDataURL('image/jpeg', 0.55);
+                    broadcastWbMessage({{ t: 'snap', img: snap }});
+                    showClassroomNotice("📤 Whiteboard synced to all students' screens!", false);
+                }} catch (e) {{
+                    console.error("Sync error:", e);
+                }}
+            }}
+
+            function requestWbSync() {{
+                broadcastWbMessage({{ t: 'req_sync' }});
+                showClassroomNotice("🔄 Requesting latest whiteboard from teacher...", false);
+            }}
+
+            // Whiteboard Canvas Interaction
             function initCanvas() {{
                 canvas = document.getElementById('teaching-canvas');
                 if (!canvas) return;
@@ -2040,27 +2204,29 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 
                 redrawCanvas();
 
-                // Mouse events
-                canvas.onmousedown = (e) => startDrawing(e);
-                canvas.onmousemove = (e) => drawMove(e);
-                canvas.onmouseup = () => stopDrawing();
-                canvas.onmouseleave = () => stopDrawing();
+                if (isTeacherRole) {{
+                    // Mouse events
+                    canvas.onmousedown = (e) => startDrawing(e);
+                    canvas.onmousemove = (e) => drawMove(e);
+                    canvas.onmouseup = () => stopDrawing();
+                    canvas.onmouseleave = () => stopDrawing();
 
-                // Touch events (Mobile finger drawing)
-                canvas.addEventListener('touchstart', (e) => {{
-                    e.preventDefault();
-                    startDrawing(getTouchPos(e));
-                }}, {{ passive: false }});
+                    // Touch events (Mobile drawing)
+                    canvas.addEventListener('touchstart', (e) => {{
+                        e.preventDefault();
+                        startDrawing(getTouchPos(e));
+                    }}, {{ passive: false }});
 
-                canvas.addEventListener('touchmove', (e) => {{
-                    e.preventDefault();
-                    drawMove(getTouchPos(e));
-                }}, {{ passive: false }});
+                    canvas.addEventListener('touchmove', (e) => {{
+                        e.preventDefault();
+                        drawMove(getTouchPos(e));
+                    }}, {{ passive: false }});
 
-                canvas.addEventListener('touchend', (e) => {{
-                    e.preventDefault();
-                    stopDrawing();
-                }}, {{ passive: false }});
+                    canvas.addEventListener('touchend', (e) => {{
+                        e.preventDefault();
+                        stopDrawing();
+                    }}, {{ passive: false }});
+                }}
             }}
 
             function getCanvasPos(evt) {{
@@ -2081,10 +2247,11 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             }}
 
             function startDrawing(e) {{
+                if (!isTeacherRole) return;
                 isDrawing = true;
-                const pos = getCanvasPos(e);
+                lastPos = getCanvasPos(e);
                 ctx.beginPath();
-                ctx.moveTo(pos.x, pos.y);
+                ctx.moveTo(lastPos.x, lastPos.y);
                 ctx.lineCap = 'round';
                 ctx.lineJoin = 'round';
                 ctx.strokeStyle = isEraser ? '#020617' : currentPenColor;
@@ -2092,16 +2259,41 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             }}
 
             function drawMove(e) {{
-                if (!isDrawing) return;
+                if (!isTeacherRole || !isDrawing) return;
                 const pos = getCanvasPos(e);
                 ctx.lineTo(pos.x, pos.y);
                 ctx.stroke();
+
+                const color = isEraser ? '#020617' : currentPenColor;
+                const width = isEraser ? (currentLineWidth * 3) : currentLineWidth;
+
+                broadcastWbMessage({{
+                    t: 'm',
+                    x0: Math.round(lastPos.x),
+                    y0: Math.round(lastPos.y),
+                    x1: Math.round(pos.x),
+                    y1: Math.round(pos.y),
+                    c: color,
+                    w: width
+                }});
+
+                lastPos = pos;
             }}
 
             function stopDrawing() {{
+                if (!isTeacherRole) return;
                 if (isDrawing) {{
                     ctx.closePath();
                     isDrawing = false;
+                    if (snapDebounceTimer) clearTimeout(snapDebounceTimer);
+                    snapDebounceTimer = setTimeout(() => {{
+                        if (canvas) {{
+                            try {{
+                                const snap = canvas.toDataURL('image/jpeg', 0.5);
+                                broadcastWbMessage({{ t: 'snap', img: snap }});
+                            }} catch(e) {{}}
+                        }}
+                    }}, 350);
                 }}
             }}
 
@@ -2156,13 +2348,16 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                     ctx.fillRect(0, 0, canvas.width, 42);
                     ctx.fillStyle = '#38bdf8';
                     ctx.font = 'bold 20px sans-serif';
-                    ctx.fillText("✨ Interactive Teaching Whiteboard & Book Presenter (Draw & Highlight)", 24, 28);
+                    ctx.fillText("✨ Sisters Academy Live Whiteboard & Book Presenter", 24, 28);
                 }}
             }}
 
             function clearCanvasDrawing() {{
                 loadedBookImage = null;
                 redrawCanvas();
+                if (isTeacherRole) {{
+                    broadcastWbMessage({{ t: 'clear' }});
+                }}
                 showClassroomNotice("Whiteboard cleared.", false);
             }}
 
@@ -2182,10 +2377,16 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                         const panel = document.getElementById('whiteboard-panel');
                         if (panel && panel.style.display === 'none') {{
                             panel.style.display = 'flex';
+                            setLayoutMode('split', null);
                         }}
                         initCanvas();
                         redrawCanvas();
-                        showClassroomNotice("📖 Book page loaded! You can now draw, explain, and highlight on top.", false);
+                        if (isTeacherRole) {{
+                            setTimeout(() => {{
+                                forceSyncCanvasToAll();
+                            }}, 150);
+                        }}
+                        showClassroomNotice("📖 Book page loaded! Synced to all students.", false);
                     }};
                     img.src = e.target.result;
                 }};
@@ -2195,30 +2396,39 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
             function toggleWhiteboard() {{
                 const panel = document.getElementById('whiteboard-panel');
                 if (!panel) return;
-                const isOpen = panel.style.display !== 'none';
-                if (isOpen) {{
-                    panel.style.display = 'none';
-                }} else {{
+                const isHidden = panel.style.display === 'none';
+                if (isHidden) {{
                     panel.style.display = 'flex';
+                    setLayoutMode('split', null);
                     initCanvas();
+                    if (isTeacherRole) {{
+                        broadcastWbMessage({{ t: 'toggle', open: true }});
+                        forceSyncCanvasToAll();
+                    }} else {{
+                        requestWbSync();
+                    }}
+                }} else {{
+                    panel.style.display = 'none';
+                    setLayoutMode('video', null);
+                    if (isTeacherRole) {{
+                        broadcastWbMessage({{ t: 'toggle', open: false }});
+                    }}
                 }}
             }}
 
-            // Share Screen / Book Page (ZERO external redirects)
+            // Desktop Screen Share & Mobile Presentation Helper
             function handleScreenShare() {{
-                if (isMobileDevice() || !navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {{
-                    showClassroomNotice("📱 Opening Book Page / Notes Presenter! Pick your book page to display & draw.", false);
+                if (isMobileDevice()) {{
+                    showClassroomNotice("📱 Mobile Tip: Phone browsers cannot capture full screen due to Android/iOS security. Use ✏️ 'Live Whiteboard' (draw & share book pages) or 📷 'Camera Flip' (point at book)!", false);
                     const panel = document.getElementById('whiteboard-panel');
                     if (panel && panel.style.display === 'none') {{
-                        panel.style.display = 'flex';
-                        initCanvas();
+                        toggleWhiteboard();
                     }}
-                    triggerBookImagePicker();
                 }} else {{
                     if (api) {{
                         try {{
                             api.executeCommand('toggleShareScreen');
-                            showClassroomNotice("Desktop Screen Share toggled.", false);
+                            showClassroomNotice("🖥️ Toggled Desktop Screen Share. Visible on all students' screens in stage view.", false);
                         }} catch (e) {{
                             showClassroomNotice("Screen share error: " + e.message, true);
                         }}
@@ -2245,7 +2455,6 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                 }}
 
                 try {{
-                    // Strictly microphone voice capture only - zero video/screen capture
                     audioStream = await navigator.mediaDevices.getUserMedia({{
                         audio: {{
                             echoCancellation: true,
@@ -2360,6 +2569,42 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
                         }}
                     }};
                     api = new JitsiMeetExternalAPI(domain, options);
+
+                    // WebRTC Data Channel Listener for Real-Time Whiteboard Synchronization
+                    api.addListener('endpointTextMessageReceived', function(event) {{
+                        let raw = "";
+                        if (event && event.data && event.data.eventData && event.data.eventData.text) {{
+                            raw = event.data.eventData.text;
+                        }} else if (event && event.eventData && event.eventData.text) {{
+                            raw = event.eventData.text;
+                        }} else if (event && event.data && event.data.text) {{
+                            raw = event.data.text;
+                        }} else if (event && event.text) {{
+                            raw = event.text;
+                        }}
+                        if (!raw) return;
+                        try {{
+                            const payload = JSON.parse(raw);
+                            handleIncomingWbMessage(payload);
+                        }} catch(err) {{}}
+                    }});
+
+                    // Screen share pin to large view
+                    api.addListener('screenSharingStatusChanged', function(event) {{
+                        if (event && event.on) {{
+                            showClassroomNotice("🖥️ Screen Sharing is LIVE! Pinned to main video stage.", false);
+                            try {{ api.executeCommand('setTileView', false); }} catch(e) {{}}
+                        }} else {{
+                            showClassroomNotice("Screen sharing stopped.", false);
+                        }}
+                    }});
+
+                    // If student, request initial whiteboard sync after joining
+                    if (!isTeacherRole) {{
+                        setTimeout(() => {{
+                            requestWbSync();
+                        }}, 2500);
+                    }}
                     
                     setTimeout(() => {{
                         const iframe = document.querySelector('#jitsi-container iframe');
@@ -2377,7 +2622,7 @@ def render_jitsi_classroom(domain: str, room_name: str, display_name: str, is_te
     </body>
     </html>
     """
-    components.html(html_code, height=component_height, scrolling=False)
+    components.html(html_code, height=component_height, scrolling=True)
 
 
 
