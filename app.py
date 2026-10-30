@@ -5537,70 +5537,7 @@ def render_student_dashboard():
             title="📚 Live Google Drive Folder Viewer",
             key_suffix="student"
         )
-        st.markdown("---")
-        st.markdown("#### 🔍 Spotlight Lectures & In-App Player")
 
-        col_s1, col_s2 = st.columns([2, 1])
-        with col_s1:
-            q = st.text_input("🔍 Search Lectures", placeholder="Search by topic or title...")
-        existing_subs = []
-        try:
-            with get_db_connection() as conn_sub:
-                c_sub = conn_sub.cursor()
-                c_sub.execute("SELECT DISTINCT subject FROM recordings WHERE subject IS NOT NULL AND subject != ''")
-                existing_subs = [row['subject'] for row in c_sub.fetchall()]
-        except Exception:
-            pass
-        subj_filter_options = ["All Subjects", "Urdu / Arabic", "Urdu", "Arabic", "Tajweed", "Islamic Studies"]
-        for s_opt in existing_subs:
-            if s_opt not in subj_filter_options:
-                subj_filter_options.append(s_opt)
-        sub_filter = st.selectbox("Subject Filter", subj_filter_options, key="std_sub_filter")
-
-        recs = []
-        if is_supabase_active():
-            params = "order=id.desc&select=*"
-            if sub_filter != "All Subjects":
-                params += f"&subject=eq.{sub_filter}"
-            ok, rows = supabase_request("GET", "recordings", params=params)
-            if ok:
-                if q:
-                    recs = [r for r in rows if q.lower() in r.get('title', '').lower() or q.lower() in r.get('description', '').lower()]
-                else:
-                    recs = rows
-
-        if not recs:
-            sql = "SELECT * FROM recordings WHERE 1=1"
-            sql_params = []
-            if q:
-                sql += " AND (title LIKE ? OR description LIKE ?)"
-                sql_params.extend([f"%{q}%", f"%{q}%"])
-            if sub_filter != "All Subjects":
-                sql += " AND subject = ?"
-                sql_params.append(sub_filter)
-            sql += " ORDER BY id DESC"
-
-            c.execute(sql, sql_params)
-            recs = [dict(r) for r in c.fetchall()]
-
-        if not recs:
-            st.info("📖 No recorded lectures published yet. When your teacher records an audio lecture or uploads study materials, they will appear here.")
-        else:
-            for r in recs:
-                st.markdown(f"""
-                <div class="glass-card">
-                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
-                        <h3 style="margin:0; color:#1e293b;">📖 {r['title']}</h3>
-                        <span style="background:#e0e7ff; color:#3730a3; padding:2px 10px; border-radius:9999px; font-weight:600; font-size:0.85rem;">
-                            {r.get('subject')} | {r.get('lecture_date')}
-                        </span>
-                    </div>
-                    <p style="margin:8px 0; color:#475569;">{r.get('description') or 'No description provided.'}</p>
-                </div>
-                """, unsafe_allow_html=True)
-
-                render_recording_player(r, is_student=True, key_suffix=f"std_rec_{r['id']}")
-                st.markdown("---")
 
     # ---------------------------------------------
     # STUDENT TAB 2.5: MY FEE PORTAL
