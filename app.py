@@ -1124,12 +1124,24 @@ def init_database():
         student_name TEXT NOT NULL,
         question TEXT NOT NULL,
         subject TEXT NOT NULL,
+        target_teacher_username TEXT DEFAULT '',
+        target_teacher_name TEXT DEFAULT '',
         reply TEXT DEFAULT NULL,
+        replied_by TEXT DEFAULT '',
         status TEXT DEFAULT 'Pending',
         created_at TEXT NOT NULL,
         replied_at TEXT DEFAULT NULL
     )
     """)
+    for col_sql in [
+        "target_teacher_username TEXT DEFAULT ''",
+        "target_teacher_name TEXT DEFAULT ''",
+        "replied_by TEXT DEFAULT ''"
+    ]:
+        try:
+            c.execute(f"ALTER TABLE doubts ADD COLUMN {col_sql}")
+        except Exception:
+            pass
 
     # 7. Student Fees Table
     c.execute("""
@@ -1444,6 +1456,79 @@ def get_all_announcements(limit: int = None) -> list[dict]:
     if limit:
         return result[:limit]
     return result
+
+def get_all_teachers() -> list[dict]:
+    """Fetches all active teacher accounts created by admin"""
+    teachers = []
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("SELECT username, full_name FROM users WHERE role = 'teacher' ORDER BY full_name ASC")
+            teachers = [dict(r) for r in c.fetchall()]
+    except Exception as e:
+        print(f"Error fetching teachers: {e}")
+    return teachers
+
+def get_doubts(for_teacher_username: str = None, for_student_username: str = None) -> list[dict]:
+    """
+    Fetches doubts seamlessly from SQLite and merges with Supabase if active.
+    Optionally filters by teacher username or student username.
+    """
+    doubts_dict = {}
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            if for_student_username:
+                c.execute("SELECT * FROM doubts WHERE student_username = ? ORDER BY id DESC", (for_student_username,))
+            elif for_teacher_username:
+                c.execute("""
+                SELECT * FROM doubts 
+                WHERE (target_teacher_username = ? OR target_teacher_username = '' OR target_teacher_username IS NULL OR target_teacher_name = 'All Teachers')
+                ORDER BY id DESC
+                """, (for_teacher_username,))
+            else:
+                c.execute("SELECT * FROM doubts ORDER BY id DESC")
+            for r in c.fetchall():
+                d = dict(r)
+                doubts_dict[d['id']] = d
+    except Exception as e:
+        print(f"Error reading SQLite doubts: {e}")
+
+    if is_supabase_active():
+        try:
+            params = "order=id.desc&select=*"
+            if for_student_username:
+                params += f"&student_username=eq.{for_student_username}"
+            ok, rows = supabase_request("GET", "doubts", params=params)
+            if ok and isinstance(rows, list):
+                for r in rows:
+                    if r.get('id') not in doubts_dict:
+                        t_un = r.get('target_teacher_username', '')
+                        t_nm = r.get('target_teacher_name', '')
+                        if for_teacher_username:
+                            if t_un and t_un != for_teacher_username and t_nm != 'All Teachers':
+                                continue
+                        doubts_dict[r['id']] = r
+                        try:
+                            with get_db_connection() as conn_w:
+                                conn_w.execute("""
+                                INSERT OR IGNORE INTO doubts (id, student_username, student_name, question, subject, target_teacher_username, target_teacher_name, reply, replied_by, status, created_at, replied_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """, (
+                                    r['id'], r.get('student_username', ''), r.get('student_name', ''),
+                                    r.get('question', ''), r.get('subject', ''),
+                                    r.get('target_teacher_username', ''), r.get('target_teacher_name', ''),
+                                    r.get('reply'), r.get('replied_by', ''),
+                                    r.get('status', 'Pending'), r.get('created_at', ''), r.get('replied_at')
+                                ))
+                                conn_w.commit()
+                        except Exception:
+                            pass
+        except Exception as e:
+            print(f"Error fetching Supabase doubts: {e}")
+
+    return sorted(doubts_dict.values(), key=lambda x: x.get('id', 0), reverse=True)
+
 
 
 
@@ -4485,28 +4570,21 @@ def render_admin_dashboard():
     # ---------------------------------------------
     with tab_doubts:
         st.subheader("Student Doubts & Questions Moderation")
-        doubts = []
-        if is_supabase_active():
-            ok, rows = supabase_request("GET", "doubts", params="order=id.desc&select=*")
-            if ok:
-                doubts = rows
-
-        if not doubts:
-            c.execute("SELECT * FROM doubts ORDER BY id DESC")
-            doubts = [dict(r) for r in c.fetchall()]
+        doubts = get_doubts()
 
         if not doubts:
             st.info("No doubts submitted by students yet.")
         else:
             for d in doubts:
-                with st.expander(f"❓ [{d.get('subject')}] {d.get('student_name')} (@{d.get('student_username')}) - {d.get('status')}"):
+                status_color = "#10b981" if d.get('status') in ('Answered', 'Resolved') else "#f59e0b"
+                with st.expander(f"❓ [{d.get('subject')}] {d.get('student_name')} (@{d.get('student_username')}) - {d.get('status', 'Pending')}"):
                     st.write(f"**Question:** {d['question']}")
-                    st.caption(f"Submitted on: {d['created_at']}")
+                    st.caption(f"Submitted on: {d['created_at']} &bull; Addressed to: **{d.get('target_teacher_name') or 'All Teachers'}**")
 
                     if d.get('reply'):
                         st.markdown(f"""
                         <div style="background:#f0fdf4; border-left:4px solid #10b981; padding:10px 14px; border-radius:6px; margin:8px 0;">
-                            <b>Explanation:</b> {d['reply']}<br>
+                            <b>Explanation ({d.get('replied_by') or 'Teacher'}):</b> {d['reply']}<br>
                             <small style="color:#64748b;">Answered at: {d.get('replied_at')}</small>
                         </div>
                         """, unsafe_allow_html=True)
@@ -4522,17 +4600,19 @@ def render_admin_dashboard():
                         if sub_ans:
                             if reply_val.strip():
                                 now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                marker = st.session_state.name or "Academy Administrator"
                                 try:
                                     with get_db_connection() as conn_w:
                                         conn_w.execute("""
-                                        UPDATE doubts SET reply = ?, status = 'Answered', replied_at = ? WHERE id = ?
-                                        """, (reply_val.strip(), now_str, d['id']))
+                                        UPDATE doubts SET reply = ?, status = 'Resolved', replied_by = ?, replied_at = ? WHERE id = ?
+                                        """, (reply_val.strip(), marker, now_str, d['id']))
                                         conn_w.commit()
+                                        trigger_cloud_sync(f"Admin answered doubt #{d['id']}")
                                 except Exception as e:
                                     print(f"Error answering doubt: {e}")
                                 if is_supabase_active():
                                     supabase_request("PATCH", "doubts", {
-                                        "reply": reply_val.strip(), "status": "Answered", "replied_at": now_str
+                                        "reply": reply_val.strip(), "status": "Resolved", "replied_by": marker, "replied_at": now_str
                                     }, params=f"id=eq.{d['id']}")
                                 st.success("Answer published to student!")
                                 st.rerun()
@@ -4544,10 +4624,12 @@ def render_admin_dashboard():
                                 with get_db_connection() as conn_w:
                                     conn_w.execute("DELETE FROM doubts WHERE id = ?", (d['id'],))
                                     conn_w.commit()
+                                    trigger_cloud_sync(f"Admin deleted doubt #{d['id']}")
                             except Exception as e:
                                 print(f"Error deleting doubt: {e}")
                             if is_supabase_active():
                                 supabase_request("DELETE", "doubts", params=f"id=eq.{d['id']}")
+                            st.rerun()
                             st.warning("Doubt removed.")
                             st.rerun()
 
@@ -4725,6 +4807,12 @@ def render_teacher_dashboard():
     teacher_notes = sess.get('teacher_notes') or ""
     started_at = sess.get('started_at') or "Recently"
 
+    # Check pending doubts for this teacher to highlight in dashboard
+    current_t_username = st.session_state.username
+    all_my_doubts = get_doubts(for_teacher_username=current_t_username)
+    teacher_pending_doubts = [d for d in all_my_doubts if d.get('status') == 'Pending']
+    doubt_tab_title = f"❓ Doubt Box & Chat ({len(teacher_pending_doubts)} New)" if teacher_pending_doubts else "❓ Doubt Box & Chat"
+
     st.markdown(f"""
     <div class="hero-banner">
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
@@ -4736,12 +4824,31 @@ def render_teacher_dashboard():
     </div>
     """, unsafe_allow_html=True)
 
+    if teacher_pending_doubts:
+        latest_d = teacher_pending_doubts[0]
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; padding: 12px 18px; border-radius: 10px; margin-bottom: 14px; box-shadow: 0 4px 14px rgba(217, 119, 6, 0.3); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="font-size: 1.5rem;">❓</span>
+                <div>
+                    <div style="font-weight: 800; font-size: 1.0rem;">🚨 NEW STUDENT QUESTION ALERT ({len(teacher_pending_doubts)} PENDING):</div>
+                    <div style="font-size: 0.92rem; opacity: 0.95;">
+                        Student <b>{latest_d['student_name']} (@{latest_d['student_username']})</b> ne sawal pucha hai: <i>"{latest_d['question'][:75]}..."</i> &bull; [{latest_d.get('subject')}]
+                    </div>
+                </div>
+            </div>
+            <span style="background: rgba(255,255,255,0.25); border: 1px solid rgba(255,255,255,0.4); padding: 4px 12px; border-radius: 9999px; font-size: 0.82rem; font-weight: 700;">
+                CHECK DOUBT BOX TAB BELOW
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+
     tab_live, tab_recordings, tab_fees, tab_notices, tab_doubts, tab_students = st.tabs([
         "🔴 Live Studio & Screen Share",
         "📚 Recorded Classes (Google Drive)",
         "💳 Student Fees & Invoices",
         "📢 Notice Board",
-        "❓ Doubt Box & Chat",
+        doubt_tab_title,
         "👥 Attendance & Student Accounts"
     ])
 
@@ -5012,70 +5119,142 @@ def render_teacher_dashboard():
     # ---------------------------------------------
     with tab_doubts:
         st.subheader("Student Doubts & Questions")
-        doubts = []
-        if is_supabase_active():
-            ok, rows = supabase_request("GET", "doubts", params="order=id.desc&select=*")
-            if ok:
-                doubts = rows
+        doubts = get_doubts(for_teacher_username=st.session_state.username)
 
-        if not doubts:
-            c.execute("SELECT * FROM doubts ORDER BY id DESC")
-            doubts = [dict(r) for r in c.fetchall()]
+        pending_doubts = [d for d in doubts if d.get('status') == 'Pending']
+        resolved_doubts = [d for d in doubts if d.get('status') in ('Answered', 'Resolved')]
 
-        if not doubts:
-            st.info("No doubts submitted by students yet.")
-        else:
-            for d in doubts:
-                with st.expander(f"❓ [{d.get('subject')}] {d.get('student_name')} (@{d.get('student_username')}) - {d.get('status')}"):
-                    st.write(f"**Question:** {d['question']}")
-                    st.caption(f"Submitted on: {d['created_at']}")
+        col_dm1, col_dm2, col_dm3 = st.columns(3)
+        with col_dm1:
+            st.metric("Total Questions", len(doubts))
+        with col_dm2:
+            st.metric("Pending Reply", len(pending_doubts))
+        with col_dm3:
+            st.metric("Resolved", len(resolved_doubts))
 
-                    if d.get('reply'):
-                        st.markdown(f"""
-                        <div style="background:#f0fdf4; border-left:4px solid #10b981; padding:10px 14px; border-radius:6px; margin:8px 0;">
-                            <b>Your Answer:</b> {d['reply']}<br>
-                            <small style="color:#64748b;">Answered at: {d.get('replied_at')}</small>
+        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+        view_mode = st.radio(
+            "Doubt View",
+            [f"🚨 Active Pending Questions ({len(pending_doubts)})", f"✅ Resolved & Answered History ({len(resolved_doubts)})"],
+            horizontal=True,
+            key="tch_doubt_filter_radio"
+        )
+
+        if "Active Pending" in view_mode:
+            if not pending_doubts:
+                st.success("🎉 Sabhi sawalat hal ho chuke hain! No pending questions awaiting your reply.")
+            else:
+                for d in pending_doubts:
+                    st.markdown(f"""
+                    <div style="background:#fffbeb; border:2px solid #f59e0b; border-radius:12px; padding:16px; margin-bottom:14px; box-shadow:0 4px 14px rgba(245, 158, 11, 0.15);">
+                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                            <div>
+                                <span style="font-size:1.1rem; font-weight:800; color:#92400e;">🚨 NEW QUESTION: {d['student_name']}</span>
+                                <code style="background:#fef3c7; color:#78350f; padding:2px 8px; border-radius:6px; font-size:0.85rem; margin-left:6px;">@{d['student_username']}</code>
+                            </div>
+                            <span style="background:#fef3c7; color:#b45309; padding:3px 12px; border-radius:12px; font-weight:700; font-size:0.82rem; border:1px solid #fde68a;">
+                                {d.get('subject', 'General')} &bull; Awaiting Reply
+                            </span>
                         </div>
-                        """, unsafe_allow_html=True)
+                        <div style="margin-top:10px; font-size:1.05rem; color:#1e293b; line-height:1.6; background:white; padding:12px 14px; border-radius:8px; border:1px solid #fed7aa;">
+                            <b>Question:</b> {d['question']}
+                        </div>
+                        <div style="margin-top:8px; font-size:0.82rem; color:#78350f;">
+                            🕒 Submitted on: <b>{d['created_at']}</b> &nbsp;|&nbsp; 👩‍🏫 Addressed to: <b>{d.get('target_teacher_name') or 'All Teachers'}</b>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
-                    with st.form(f"rep_form_{d['id']}"):
-                        reply_val = st.text_area("Your Explanation / Answer", value=d.get('reply') or "")
-                        col_rb1, col_rb2 = st.columns([1, 1])
+                    with st.form(f"rep_form_pending_{d['id']}"):
+                        reply_val = st.text_area("Your Explanation / Answer to Student", placeholder="Write your explanation or answer here...", key=f"rep_txt_{d['id']}")
+                        col_rb1, col_rb2, col_rb3 = st.columns([1.5, 1.3, 1])
                         with col_rb1:
-                            sub_ans = st.form_submit_button("Save & Send Answer", type="primary", use_container_width=True)
+                            sub_ans = st.form_submit_button("💬 Send Reply & Mark Resolved", type="primary", use_container_width=True)
                         with col_rb2:
-                            del_doubt = st.form_submit_button("Remove Doubt", use_container_width=True)
+                            mark_res = st.form_submit_button("✅ Mark Resolved (In-Class)", use_container_width=True)
+                        with col_rb3:
+                            del_doubt = st.form_submit_button("🗑️ Delete Question", use_container_width=True)
+
+                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        marker = st.session_state.name or "Teacher"
 
                         if sub_ans:
                             if reply_val.strip():
-                                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 try:
                                     with get_db_connection() as conn_w:
                                         conn_w.execute("""
-                                        UPDATE doubts SET reply = ?, status = 'Answered', replied_at = ? WHERE id = ?
-                                        """, (reply_val.strip(), now_str, d['id']))
+                                        UPDATE doubts SET reply = ?, status = 'Resolved', replied_by = ?, replied_at = ? WHERE id = ?
+                                        """, (reply_val.strip(), marker, now_str, d['id']))
                                         conn_w.commit()
+                                        trigger_cloud_sync(f"Answered doubt #{d['id']}")
                                 except Exception as e:
                                     print(f"Error answering doubt: {e}")
                                 if is_supabase_active():
                                     supabase_request("PATCH", "doubts", {
-                                        "reply": reply_val.strip(), "status": "Answered", "replied_at": now_str
+                                        "reply": reply_val.strip(), "status": "Resolved", "replied_by": marker, "replied_at": now_str
                                     }, params=f"id=eq.{d['id']}")
-                                st.success("Answer published to student!")
+                                st.success("✅ Reply sent to student and question removed from active list!")
                                 st.rerun()
                             else:
-                                st.error("Response cannot be empty.")
+                                st.error("Please enter your answer before sending.")
+
+                        if mark_res:
+                            try:
+                                with get_db_connection() as conn_w:
+                                    conn_w.execute("""
+                                    UPDATE doubts SET reply = 'Discussed and resolved directly in live class.', status = 'Resolved', replied_by = ?, replied_at = ? WHERE id = ?
+                                    """, (marker, now_str, d['id']))
+                                    conn_w.commit()
+                                    trigger_cloud_sync(f"Resolved doubt #{d['id']}")
+                            except Exception as e:
+                                print(f"Error resolving doubt: {e}")
+                            if is_supabase_active():
+                                supabase_request("PATCH", "doubts", {
+                                    "reply": "Discussed and resolved directly in live class.", "status": "Resolved", "replied_by": marker, "replied_at": now_str
+                                }, params=f"id=eq.{d['id']}")
+                            st.success("✅ Question marked as resolved and removed from active dashboard!")
+                            st.rerun()
 
                         if del_doubt:
                             try:
                                 with get_db_connection() as conn_w:
                                     conn_w.execute("DELETE FROM doubts WHERE id = ?", (d['id'],))
                                     conn_w.commit()
+                                    trigger_cloud_sync(f"Deleted doubt #{d['id']}")
                             except Exception as e:
                                 print(f"Error deleting doubt: {e}")
                             if is_supabase_active():
                                 supabase_request("DELETE", "doubts", params=f"id=eq.{d['id']}")
-                            st.warning("Doubt removed.")
+                            st.warning("Question deleted.")
+                            st.rerun()
+
+        else:
+            if not resolved_doubts:
+                st.info("No resolved questions history yet.")
+            else:
+                for d in resolved_doubts:
+                    with st.expander(f"✅ [{d.get('subject')}] {d['student_name']} (@{d['student_username']}) - Answered by {d.get('replied_by') or 'Teacher'}"):
+                        st.markdown(f"**Question:** {d['question']}")
+                        st.caption(f"Asked on: {d['created_at']} &bull; Addressed to: {d.get('target_teacher_name') or 'All Teachers'}")
+
+                        if d.get('reply'):
+                            st.markdown(f"""
+                            <div style="background:#f0fdf4; border-left:4px solid #10b981; padding:10px 14px; border-radius:6px; margin:8px 0;">
+                                <b style="color:#166534;">Explanation / Answer:</b> {d['reply']}<br>
+                                <small style="color:#64748b;">Answered by <b>{d.get('replied_by') or 'Teacher'}</b> at {d.get('replied_at', '-')}</small>
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                        if st.button("🗑️ Delete from History", key=f"del_res_{d['id']}"):
+                            try:
+                                with get_db_connection() as conn_w:
+                                    conn_w.execute("DELETE FROM doubts WHERE id = ?", (d['id'],))
+                                    conn_w.commit()
+                                    trigger_cloud_sync(f"Deleted doubt #{d['id']}")
+                            except Exception as e:
+                                print(f"Error deleting doubt: {e}")
+                            if is_supabase_active():
+                                supabase_request("DELETE", "doubts", params=f"id=eq.{d['id']}")
                             st.rerun()
 
     # ---------------------------------------------
@@ -5676,6 +5855,20 @@ def render_student_dashboard():
 
         with col_d1:
             st.markdown("### ✍️ Ask a Question")
+            teachers_list = get_all_teachers()
+            t_options = {"All Teachers (Any Available Teacher)": ("", "All Teachers")}
+            for t in teachers_list:
+                lbl = f"👩‍🏫 {t['full_name']} (@{t['username']})"
+                t_options[lbl] = (t['username'], t['full_name'])
+
+            chosen_t_lbl = st.selectbox(
+                "Select Teacher to Ask",
+                list(t_options.keys()),
+                key="std_ask_teacher_dropdown",
+                help="Sawal kis teacher se puchna chahte hain select karein."
+            )
+            target_t_un, target_t_name = t_options[chosen_t_lbl]
+
             with st.form("ask_doubt_form", clear_on_submit=True):
                 d_sub = st.text_input("Subject", value="Urdu / Arabic", placeholder="Type any subject e.g. Urdu, Arabic, Tajweed, Grammar...", key="std_doubt_sub")
                 d_q = st.text_area("Your Doubt / Question", placeholder="Explain your question in detail...")
@@ -5689,61 +5882,69 @@ def render_student_dashboard():
                         try:
                             with get_db_connection() as conn_w:
                                 conn_w.execute("""
-                                INSERT INTO doubts (student_username, student_name, question, subject, created_at)
-                                VALUES (?, ?, ?, ?, ?)
-                                """, (st.session_state.username, st.session_state.name, d_q.strip(), d_sub, now_str))
+                                INSERT INTO doubts (student_username, student_name, question, subject, target_teacher_username, target_teacher_name, created_at, status)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, 'Pending')
+                                """, (st.session_state.username, st.session_state.name, d_q.strip(), d_sub, target_t_un, target_t_name, now_str))
                                 conn_w.commit()
+                                trigger_cloud_sync(f"Student asked doubt to {target_t_name}")
                         except Exception as e:
                             print(f"Error submitting doubt: {e}")
 
                         if is_supabase_active():
-                            supabase_request("POST", "doubts", {
+                            ok, _ = supabase_request("POST", "doubts", {
                                 "student_username": st.session_state.username,
                                 "student_name": st.session_state.name,
                                 "question": d_q.strip(),
                                 "subject": d_sub,
+                                "target_teacher_username": target_t_un,
+                                "target_teacher_name": target_t_name,
+                                "status": "Pending",
                                 "created_at": now_str
                             })
+                            if not ok:
+                                supabase_request("POST", "doubts", {
+                                    "student_username": st.session_state.username,
+                                    "student_name": st.session_state.name,
+                                    "question": d_q.strip(),
+                                    "subject": d_sub,
+                                    "created_at": now_str
+                                })
 
-                        st.success("Question submitted to Teacher!")
+                        st.success(f"Question submitted to {target_t_name}!")
                         st.rerun()
 
         with col_d2:
             st.markdown("### 💬 Your Questions & Answers")
-            my_doubts = []
-            if is_supabase_active():
-                ok, rows = supabase_request("GET", "doubts", params=f"student_username=eq.{st.session_state.username}&order=id.desc&select=*")
-                if ok:
-                    my_doubts = rows
-
-            if not my_doubts:
-                c.execute("SELECT * FROM doubts WHERE student_username = ? ORDER BY id DESC", (st.session_state.username,))
-                my_doubts = [dict(r) for r in c.fetchall()]
+            my_doubts = get_doubts(for_student_username=st.session_state.username)
 
             if not my_doubts:
                 st.info("You haven't posted any doubts yet.")
             else:
                 for md in my_doubts:
-                    is_ans = md.get('status') == 'Answered'
-                    st_badge = "🟢 Answered" if is_ans else "🟠 Awaiting Reply"
+                    is_ans = md.get('status') in ('Answered', 'Resolved')
+                    st_badge = '<span style="background:#10b981; color:white; padding:3px 10px; border-radius:12px; font-weight:700; font-size:0.8rem;">✅ Answered & Resolved</span>' if is_ans else '<span style="background:#f59e0b; color:white; padding:3px 10px; border-radius:12px; font-weight:700; font-size:0.8rem;">⏳ Awaiting Reply</span>'
 
                     st.markdown(f"""
-                    <div class="glass-card">
-                        <div style="display:flex; justify-content:space-between;">
-                            <b style="color:#1e293b;">[{md.get('subject')}]</b>
-                            <span style="font-size:0.85rem; font-weight:600;">{st_badge}</span>
+                    <div class="glass-card" style="margin-bottom:12px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+                            <b style="color:#1e293b; font-size:1.0rem;">[{md.get('subject')}]</b>
+                            {st_badge}
                         </div>
-                        <p style="margin:6px 0; color:#334155;"><b>Question:</b> {md['question']}</p>
-                        <small style="color:#94a3b8;">Posted: {md['created_at']}</small>
+                        <div style="margin:6px 0 2px 0; font-size:0.85rem; color:#64748b;">
+                            👩‍🏫 <b>Teacher:</b> {md.get('target_teacher_name') or 'All Teachers'} &bull; Submitted: {md['created_at']}
+                        </div>
+                        <p style="margin:8px 0; color:#334155; font-size:0.96rem;"><b>Question:</b> {md['question']}</p>
                     </div>
                     """, unsafe_allow_html=True)
 
                     if md.get('reply'):
                         st.markdown(f"""
-                        <div style="background:#f0fdf4; border-left:4px solid #10b981; padding:10px 14px; border-radius:6px; margin-bottom:14px;">
-                            <b style="color:#166534;">👩‍🏫 Teacher's Explanation:</b>
-                            <p style="margin:4px 0; color:#14532d;">{md['reply']}</p>
-                            <small style="color:#64748b;">Answered at: {md.get('replied_at')}</small>
+                        <div style="background:#f0fdf4; border-left:4px solid #10b981; padding:12px 16px; border-radius:8px; margin-top:-6px; margin-bottom:14px; box-shadow:0 2px 8px rgba(16,185,129,0.1);">
+                            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:4px; margin-bottom:4px;">
+                                <b style="color:#166534; font-size:0.95rem;">👩‍🏫 Teacher's Explanation ({md.get('replied_by') or 'Teacher'}):</b>
+                                <small style="color:#64748b;">{md.get('replied_at') or ''}</small>
+                            </div>
+                            <p style="margin:4px 0 0 0; color:#14532d; font-size:0.95rem; line-height:1.5;">{md['reply']}</p>
                         </div>
                         """, unsafe_allow_html=True)
 
